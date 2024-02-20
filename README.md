@@ -4,9 +4,9 @@
 The WarlockSummon addon is designed to simplify the process of summoning raid or party members to the warlock's location in World of Warcraft version 1.12.1.
 It provides a convenient button that allows warlocks to initiate summoning rituals for eligible group members, streamlining the summoning process during raids or dungeon runs.
 
-![]warlocksummon.png)
-![]warlocksummon2.png)
-![]warlocksummon3.png)
+![](warlocksummon.png)
+![](warlocksummon2.png)
+![](warlocksummon3.png)
 
 ## Features
 + Automatic detection of warlock class: The addon loads only for warlock characters, ensuring compatibility and functionality specific to warlocks.
