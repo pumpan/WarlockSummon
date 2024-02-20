@@ -7,6 +7,7 @@ It provides a convenient button that allows warlocks to initiate summoning ritua
 ![]warlocksummon.png)
 ![]warlocksummon2.png)
 ![]warlocksummon3.png)
+
 ## Features
 + Automatic detection of warlock class: The addon loads only for warlock characters, ensuring compatibility and functionality specific to warlocks.
 + Easy summoning initiation: Summon group members with the click of a button, without the need to target each individual player.
