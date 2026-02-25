@@ -5,10 +5,33 @@
 
 local settingsLoaded = false
 
+local frame = CreateFrame("Frame")
+frame:RegisterEvent("ADDON_LOADED")
+frame:RegisterEvent("PLAYER_LOGOUT")
+frame:SetScript("OnEvent", function()
+    if event == "ADDON_LOADED" then
+        if arg1 == "FillRaidBots" then
+            FillRaidBots_LoadSettings()
+        end
+    elseif event == "PLAYER_LOGOUT" then
+        FillRaidBots_SaveSettings()
+    end
+end)
+
+
 --==================================================
 -- SETTINGS CONFIG (EDIT THIS ONLY)
 --==================================================
+function SetLootOption(isFFA, isGroup, isMaster)
 
+    if isFFA then
+        SetLootMethod("freeforall")
+    elseif isGroup then
+        SetLootMethod("group")
+    elseif isMaster then
+        SetLootMethod("master", UnitName("player"))
+    end
+end
 local SettingsConfig = {
 
     sections = {
@@ -26,6 +49,10 @@ local SettingsConfig = {
                     label = "Auto Remove Dead Bots",
                     tooltip = "Automatically removes dead bots from raid/party.",
                     default = true,
+                    onApply = function(value) 
+                        -- Ingen funktion i ditt gamla ApplySavedSettings, bara sparar värdet
+                        -- Lägg till om du vill ha live-effekt
+                    end
                 },
 
                 {
@@ -34,6 +61,9 @@ local SettingsConfig = {
                     label = "Suppress Messages",
                     tooltip = "Suppress bot messages.",
                     default = true,
+                    onApply = function(value)
+                        -- Samma som ovan
+                    end
                 },
             }
         },
@@ -51,7 +81,7 @@ local SettingsConfig = {
                     label = "Click-To-Fill",
                     tooltip = "Hold ctrl+alt+click boss to fill raid.",
                     default = true,
-                    onApply = ToggleClickToFill
+                    onApply = function(value) ToggleClickToFill(value) end
                 },
 
                 {
@@ -60,7 +90,7 @@ local SettingsConfig = {
                     label = "Auto Repair",
                     tooltip = "Automatically repair after resurrection.",
                     default = false,
-                    onApply = ToggleAutoRepair
+                    onApply = function(value) ToggleAutoRepair(value) end
                 },
 
                 {
@@ -69,7 +99,7 @@ local SettingsConfig = {
                     label = "Auto Join Guild",
                     tooltip = "Automatically join the guild.",
                     default = true,
-                    onApply = ToggleAutoJoinGuild
+                    onApply = function(value) ToggleAutoJoinGuild(value) end
                 },
 
                 {
@@ -78,7 +108,7 @@ local SettingsConfig = {
                     label = "Auto Mute Sound",
                     tooltip = "Automatically lower sound while filling raid.",
                     default = true,
-                    onApply = ToggleAutoMuteSound
+                    onApply = function(value) ToggleAutoMuteSound(value) end
                 },
 
                 {
@@ -87,7 +117,7 @@ local SettingsConfig = {
                     label = "Daily Tip",
                     tooltip = "Shows a daily tip.",
                     default = true,
-                    onApply = ToggleDailyTip
+                    onApply = function(value) ToggleDailyTip(value) end
                 },
             }
         },
@@ -105,7 +135,7 @@ local SettingsConfig = {
                     label = "Enable moving buttons",
                     tooltip = "Enable moving of fillraid and kick buttons.",
                     default = false,
-                    onApply = function()
+                    onApply = function(value)
                         ToggleButtonMovement(OpenFillRaidButton)
                     end
                 },
@@ -116,7 +146,9 @@ local SettingsConfig = {
                     label = "Enable Refill Button",
                     tooltip = "The Refill Button will be available.",
                     default = true,
-                    onApply = UpdateReFillButtonVisibility
+                    onApply = function()
+                        UpdateReFillButtonVisibility()
+                    end
                 },
 
                 {
@@ -125,7 +157,7 @@ local SettingsConfig = {
                     label = "Enable Small Button",
                     tooltip = "Buttons will be small.",
                     default = false,
-                    onApply = ToggleSmallbuttonCheck
+                    onApply = function(value) ToggleSmallbuttonCheck(value) end
                 },
             }
         },
@@ -216,6 +248,9 @@ end
 -- CHECKBUTTON CREATOR (1.12 SAFE)
 --==================================================
 
+--==================================================
+-- CHECKBUTTON CREATOR (WoW 1.12 SAFE)
+--==================================================
 local function CreateCheckButton(parent, name, anchor, x, y, label, tooltip, value, onClick)
 
     local cb = CreateFrame("CheckButton", name, parent, "UICheckButtonTemplate")
@@ -223,19 +258,34 @@ local function CreateCheckButton(parent, name, anchor, x, y, label, tooltip, val
     cb:SetHeight(20)
     cb:SetPoint("TOPLEFT", anchor, "TOPLEFT", x, y)
 
+    -- Textlabel
     cb.text = cb:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     cb.text:SetPoint("LEFT", cb, "RIGHT", 5, 0)
     cb.text:SetText(label)
 
-    cb:SetChecked(value)
+    -- Se till att värdet alltid blir true/false
+    cb:SetChecked(value and true or false)
 
+    -- Klickhändelse
     cb:SetScript("OnClick", function()
-        local checked = this:GetChecked()
+        -- GetChecked kan returnera 1/nil i 1.12, så konvertera alltid till boolean
+        local checked = cb:GetChecked() and true or false
+
+        -- Uppdatera SavedVariables
+        if name and FillRaidBotsSavedSettings then
+            FillRaidBotsSavedSettings[name] = checked
+        end
+
+        -- Kör eventuell callback
         if onClick then
             onClick(checked)
         end
+		-- Skriv ut status i chatten
+		local status = checked and "|cFF00FF00enabled|r" or "|cFFFF0000disabled|r"
+		DEFAULT_CHAT_FRAME:AddMessage((label or name) .. ": " .. status)		
     end)
 
+    -- Tooltip
     cb:SetScript("OnEnter", function()
         if tooltip and tooltip ~= "" then
             GameTooltip:SetOwner(cb, "ANCHOR_RIGHT")
@@ -257,154 +307,216 @@ end
 
 function CreateSettingsUI()
 
-    local anchor = UISettingsFrame
-    local yOffset = -20
+    if not FillRaidBotsSavedSettings then
+        FillRaidBotsSavedSettings = {}
+    end
+
+    local currentY = -20
 
     for _, section in ipairs(SettingsConfig.sections) do
 
+        --------------------------------------------------
+        -- SECTION HEADER
+        --------------------------------------------------
         local header, separator = CreateUISectionHeader(
             UISettingsFrame,
-            anchor,
+            UISettingsFrame,
             section.name,
             10,
-            yOffset
+            currentY
         )
 
-        anchor = separator
-        yOffset = -15
+        currentY = currentY - 30
 
+        --------------------------------------------------
+        -- ITEMS
+        --------------------------------------------------
         for _, item in ipairs(section.items) do
 
+            --------------------------------------------------
+            -- CHECKBOX
+            --------------------------------------------------
             if item.type == "checkbox" then
+
+                local currentItem = item  -- 🔥 closure-safe copy
+                local key = currentItem.key
 
                 local cb = CreateCheckButton(
                     UISettingsFrame,
-                    item.key,
-                    anchor,
-                    10,
-                    yOffset,
-                    item.label,
-                    item.tooltip,
-                    FillRaidBotsSavedSettings[item.key],
+                    key,
+                    UISettingsFrame,
+                    20,
+                    currentY,
+                    currentItem.label,
+                    currentItem.tooltip,
+                    FillRaidBotsSavedSettings[key],
                     function(value)
 
-                        FillRaidBotsSavedSettings[item.key] = value
+                        FillRaidBotsSavedSettings[key] = value
 
-                        if item.onApply then
-                            item.onApply(value)
+                        if currentItem.onApply then
+                            currentItem.onApply(value)
                         end
                     end
                 )
 
-                item.frame = cb
-                anchor = cb
-                yOffset = -20
+                currentItem.frame = cb
+                currentY = currentY - 25
 
+
+            --------------------------------------------------
+            -- RADIO GROUP
+            --------------------------------------------------
             elseif item.type == "radio" then
-                local startX = 10
-                local spacing = 80
-                local labelOffsetY = yOffset
-            
-                for i, option in ipairs(item.options) do
-            
-                    local xPos = startX + (i - 1) * spacing
-            
-                    -- Label ABOVE
-                    local label = UISettingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-                    label:SetPoint("TOPLEFT", anchor, "TOPLEFT", xPos, labelOffsetY)
-                    label:SetText(option.label)
-            
-                    -- Checkbox BELOW label
-                    local cb = CreateFrame("CheckButton", option.key, UISettingsFrame, "UICheckButtonTemplate")
-                    cb:SetWidth(20)
-                    cb:SetHeight(20)
-                    cb:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 5, -2)
-            
-                    cb:SetChecked(FillRaidBotsSavedSettings[option.key])
-            
-                    cb:SetScript("OnClick", function()
-            
-                        -- reset group
-                        for _, opt in ipairs(item.options) do
-                            FillRaidBotsSavedSettings[opt.key] = false
-                            if opt.frame then
-                                opt.frame:SetChecked(false)
-                            end
-                        end
-            
-                        FillRaidBotsSavedSettings[option.key] = true
-                        cb:SetChecked(true)
-            
-                        if item.onApply then
-                            item.onApply(option.key)
-                        end
-                    end)
-            
-                    option.frame = cb
-                end
-            
-                yOffset = yOffset - 45
-                anchor = anchor
+
+                local currentItem = item  -- 🔥 closure-safe copy
+                local startX = 20
+                local spacing = 50
+
+				-- Inuti din CreateSettingsUI, där du skapar radio-knapparna
+				for i, option in ipairs(currentItem.options) do
+					local currentOption = option
+					local xPos = startX + (i - 1) * spacing
+
+					-- Label ovanför
+					local label = UISettingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+					label:SetPoint("TOPLEFT", UISettingsFrame, "TOPLEFT", xPos, currentY)
+					label:SetText(currentOption.label)
+
+					-- Checkbox nedanför
+					local cb = CreateFrame("CheckButton", nil, UISettingsFrame, "UICheckButtonTemplate")
+					cb:SetWidth(20)
+					cb:SetHeight(20)
+					cb:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 5, -2)
+
+					cb:SetChecked(FillRaidBotsSavedSettings[currentOption.key])
+
+					cb:SetScript("OnClick", function()
+						-- Reset hela gruppen
+						for _, opt in ipairs(currentItem.options) do
+							FillRaidBotsSavedSettings[opt.key] = false
+							if opt.frame then
+								opt.frame:SetChecked(false)
+							end
+						end
+
+						-- Markera det valda alternativet
+						FillRaidBotsSavedSettings[currentOption.key] = true
+						cb:SetChecked(true)
+
+						-- Uppdatera loot-metoden direkt
+						SetLootOption(
+							FillRaidBotsSavedSettings.isFFAEnabled,
+							FillRaidBotsSavedSettings.isGroupLootEnabled,
+							FillRaidBotsSavedSettings.isMasterLootEnabled
+						)
+
+						-- Chat-feedback
+						DEFAULT_CHAT_FRAME:AddMessage(currentOption.label .. ": |cFF00FF00enabled|r")
+
+						-- Kör eventuell callback
+						if currentItem.onApply then
+							currentItem.onApply(currentOption.key)
+						end
+					end)
+
+					currentOption.frame = cb
+				end
+
+                currentY = currentY - 50
+            end
         end
 
-        yOffset = yOffset - 10
+        currentY = currentY - 10
     end
-end
+	--==================================================
+	-- AUTO-RESIZE UISettingsFrame
+	--==================================================
 
+	-- Auto-resize based on currentY
+	local topPadding = 10 -- samma som startY
+	local bottomPadding = 0
+
+	-- currentY är längst ner efter sista element
+	-- Höjden = startY (top padding) minus sista currentY plus bottenpadding
+	local totalHeight = topPadding - currentY + bottomPadding
+	UISettingsFrame:SetHeight(totalHeight)
+end
 --==================================================
 -- APPLY SETTINGS
 --==================================================
 
 local function ApplySavedSettings()
-
     for _, section in ipairs(SettingsConfig.sections) do
         for _, item in ipairs(section.items) do
 
             if item.type == "checkbox" then
-
                 local value = FillRaidBotsSavedSettings[item.key]
 
+                -- Update the checkbox UI
                 if item.frame then
                     item.frame:SetChecked(value)
                 end
 
+                -- Apply saved value
                 if item.onApply then
                     item.onApply(value)
                 end
 
             elseif item.type == "radio" then
+                local selectedKey = nil
 
+                -- Update radio UI and determine selected
                 for _, option in ipairs(item.options) do
+                    local checked = FillRaidBotsSavedSettings[option.key]
                     if option.frame then
-                        option.frame:SetChecked(
-                            FillRaidBotsSavedSettings[option.key]
-                        )
+                        option.frame:SetChecked(checked)
+                    end
+                    if checked then
+                        selectedKey = option.key
                     end
                 end
 
-                if item.onApply then
-                    for _, option in ipairs(item.options) do
-                        if FillRaidBotsSavedSettings[option.key] then
-                            item.onApply(option.key)
-                        end
-                    end
+                -- Apply selected radio
+                if item.onApply and selectedKey then
+                    item.onApply(selectedKey)
                 end
             end
         end
     end
-end
 
+    -- Special cases: debugger
+    if debuggerFrame then
+        if FillRaidBotsSavedSettings.debugMessagesEnabled then
+            debuggerFrame:Show()
+        else
+            debuggerFrame:Hide()
+        end
+    end
+
+    -- Loot
+    SetLootOption(
+        FillRaidBotsSavedSettings.isFFAEnabled,
+        FillRaidBotsSavedSettings.isGroupLootEnabled,
+        FillRaidBotsSavedSettings.isMasterLootEnabled
+    )
+end
 --==================================================
 -- LOAD SETTINGS
 --==================================================
-
 function FillRaidBots_LoadSettings()
 
-    if settingsLoaded then return end
-    settingsLoaded = true
+    if not FillRaidBotsSavedSettings then
+        FillRaidBotsSavedSettings = {}
+    end
 
     InitializeDefaults()
-    CreateSettingsUI()
+
+    if not settingsLoaded then
+        settingsLoaded = true
+        CreateSettingsUI()
+    end
+
     ApplySavedSettings()
 end
 
@@ -412,11 +524,4 @@ end
 -- EVENT HANDLER
 --==================================================
 
-local frame = CreateFrame("Frame")
-frame:RegisterEvent("ADDON_LOADED")
 
-frame:SetScript("OnEvent", function()
-    if event == "ADDON_LOADED" then
-        FillRaidBots_LoadSettings()
-    end
-end)
