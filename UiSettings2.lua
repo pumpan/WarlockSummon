@@ -301,45 +301,50 @@ function CreateSettingsUI()
                 yOffset = -20
 
             elseif item.type == "radio" then
-
                 local startX = 10
-                local spacing = 70
-
+                local spacing = 80
+                local labelOffsetY = yOffset
+            
                 for i, option in ipairs(item.options) do
-
-                    local cb = CreateCheckButton(
-                        UISettingsFrame,
-                        option.key,
-                        anchor,
-                        startX + (i - 1) * spacing,
-                        yOffset,
-                        option.label,
-                        "",
-                        FillRaidBotsSavedSettings[option.key],
-                        function()
-
-                            for _, opt in ipairs(item.options) do
-                                FillRaidBotsSavedSettings[opt.key] = false
-                                if opt.frame then
-                                    opt.frame:SetChecked(false)
-                                end
-                            end
-
-                            FillRaidBotsSavedSettings[option.key] = true
-                            option.frame:SetChecked(true)
-
-                            if item.onApply then
-                                item.onApply(option.key)
+            
+                    local xPos = startX + (i - 1) * spacing
+            
+                    -- Label ABOVE
+                    local label = UISettingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+                    label:SetPoint("TOPLEFT", anchor, "TOPLEFT", xPos, labelOffsetY)
+                    label:SetText(option.label)
+            
+                    -- Checkbox BELOW label
+                    local cb = CreateFrame("CheckButton", option.key, UISettingsFrame, "UICheckButtonTemplate")
+                    cb:SetWidth(20)
+                    cb:SetHeight(20)
+                    cb:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 5, -2)
+            
+                    cb:SetChecked(FillRaidBotsSavedSettings[option.key])
+            
+                    cb:SetScript("OnClick", function()
+            
+                        -- reset group
+                        for _, opt in ipairs(item.options) do
+                            FillRaidBotsSavedSettings[opt.key] = false
+                            if opt.frame then
+                                opt.frame:SetChecked(false)
                             end
                         end
-                    )
-
+            
+                        FillRaidBotsSavedSettings[option.key] = true
+                        cb:SetChecked(true)
+            
+                        if item.onApply then
+                            item.onApply(option.key)
+                        end
+                    end)
+            
                     option.frame = cb
                 end
-
-                anchor = item.options[1].frame
-                yOffset = -30
-            end
+            
+                yOffset = yOffset - 45
+                anchor = anchor
         end
 
         yOffset = yOffset - 10
