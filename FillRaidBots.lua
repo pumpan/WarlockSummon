@@ -52,6 +52,12 @@ end
 function ToggleDailyTip(isChecked)
     DailyTipEnabled = isChecked 
 end
+function ToggleZonePresets(isChecked)
+    ZonePresetsEnabled = isChecked
+end
+function ToggleOthersButton(isChecked)
+    OthersButtonEnabled = isChecked
+end
 ----------------------VIP Detector--------------------------
 local vipFrame = CreateFrame("Frame", "VIPDetectorFrame")
 local isVIP = false
@@ -89,10 +95,10 @@ vipFrame:SetScript("OnEvent", function()
         if msg and IsVIPMessage(msg) then
             isVIP = true
             FillRaidBotsSavedSettings.isVIP = true
-			AutoRepairCheckButton:SetChecked(true)
+			isAutoRepairEnabled:SetChecked(true)
             DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[VIP DETECTED]|r You have VIP status!")
             vipListening = false
-			AutoRepairCheckButton:Enable()
+			isAutoRepairEnabled:Enable()
         end
     end
 end)
@@ -106,10 +112,10 @@ vipFrame:SetScript("OnUpdate", function()
             vipListening = false
             DebugMessage("|cffffff00[VIP SCAN DONE]|r No VIP detected.", "debuginfo")
             vipFrame:SetScript("OnUpdate", nil) 
-			AutoRepairCheckButton:SetChecked(false)
-			AutoRepairCheckButton:Disable()
-			AutoRepairCheckButton.text:SetTextColor(0.5, 0.5, 0.5) 
-			AutoRepairCheckButton.text:SetText("Auto Repair (VIP ONLY)")
+			isAutoRepairEnabled:SetChecked(false)
+			isAutoRepairEnabled:Disable()
+			isAutoRepairEnabled.text:SetTextColor(0.5, 0.5, 0.5) 
+			isAutoRepairEnabled.text:SetText("Auto Repair (VIP ONLY)")
         end
     end
 end)
@@ -1320,10 +1326,52 @@ function resetfirstbot_OnEvent()
 end
 
 
+local function GetSelectedLootMethod()
+    if FillRaidBotsSavedSettings.isFFAEnabled then
+        return "freeforall"
+    elseif FillRaidBotsSavedSettings.isGroupLootEnabled then
+        return "group"
+    elseif FillRaidBotsSavedSettings.isMasterLootEnabled then
+        return "master"
+    end
+end
+
+local function ApplySavedLootMethod()
+    if not IsRaidLeader() and not IsPartyLeader() then
+        return
+    end
+
+    local currentMethod = GetLootMethod()
+
+    if FillRaidBotsSavedSettings.isMasterLootEnabled then
+        if currentMethod ~= "master" then
+            SetLootMethod("master", UnitName("player"))
+        end
+
+    elseif FillRaidBotsSavedSettings.isGroupLootEnabled then
+        if currentMethod ~= "group" then
+            SetLootMethod("group")
+        end
+
+    elseif FillRaidBotsSavedSettings.isFFAEnabled then
+        if currentMethod ~= "freeforall" then
+            SetLootMethod("freeforall")
+        end
+    end
+end
+
+
 local resetBotFrame = CreateFrame("Frame")
 resetBotFrame:RegisterEvent("RAID_ROSTER_UPDATE")
 resetBotFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")
-resetBotFrame:SetScript("OnEvent", resetfirstbot_OnEvent)
+
+resetBotFrame:SetScript("OnEvent", function()
+    
+    -- Kör din gamla funktion först
+    resetfirstbot_OnEvent()
+    ApplySavedLootMethod()
+
+end)
 
 
 
@@ -1351,15 +1399,6 @@ function FillRaid_OnLoad()
   factionName, factionGroup = UnitFactionGroup("player")
 end
 
-local function GetSelectedLootMethod()
-    if FillRaidBotsSavedSettings.isFFAEnabled then
-        return "freeforall"
-    elseif FillRaidBotsSavedSettings.isGroupLootEnabled then
-        return "group"
-    elseif FillRaidBotsSavedSettings.isMasterLootEnabled then
-        return "master"
-    end
-end
 
 local originalSoundVolume = nil
 local restoreFrame = CreateFrame("Frame")
@@ -1493,6 +1532,16 @@ local function FillRaid()
         if GetNumPartyMembers() >= 1 then
             if totalToAdd > 5 then
 				ConvertToRaid()
+                    local selectedLoot = GetSelectedLootMethod()
+                    if selectedLoot == "master" then
+                       
+                        local playerName = UnitName("player")
+                        SetLootMethod("master", playerName)
+                        QueueDebugMessage("Loot method set to Master Looter. Assigned to: " .. playerName, "debuginfo")
+                    else
+                        SetLootMethod(selectedLoot)
+                        QueueDebugMessage("Loot method set to: " .. selectedLoot, "debuginfo")
+                    end				
 				QueueDebugMessage("Converted to raid.", "debugfilling")
 			end
         elseif GetNumPartyMembers() < 2 then
@@ -2257,20 +2306,31 @@ end)
 		  FillRaidFrame:Hide()
 		  fillRaidFrameManualClose = true 
 	  end)
+
 	  
 	local UISettingsFrame = CreateFrame("Frame", "UISettingsFrame", UIParent)
 	UISettingsFrame:SetWidth(200)
 	UISettingsFrame:SetHeight(30)
 	UISettingsFrame:SetPoint("LEFT", FillRaidFrame, "RIGHT", 10, 0)
 	UISettingsFrame:SetBackdrop({
-		bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+		bgFile = "Interface/Buttons/WHITE8X8", -- helt vit textur, vi färgar den svart med SetBackdropColor
 		edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
 		tile = true, tileSize = 16, edgeSize = 16,
 		insets = { left = 4, right = 4, top = 4, bottom = 4 }
 	})
-	UISettingsFrame:SetBackdropColor(0, 0, 0, 1) 
+	UISettingsFrame:SetBackdropColor(0, 0, 0, 1)
 	UISettingsFrame:SetFrameStrata("DIALOG")
 	UISettingsFrame:SetFrameLevel(10)
+	UISettingsFrame:SetMovable(true)
+	UISettingsFrame:EnableMouse(true)
+	UISettingsFrame:RegisterForDrag("LeftButton")
+
+	UISettingsFrame:SetScript("OnDragStart", function()
+		UISettingsFrame:StartMoving()
+	end)	
+	UISettingsFrame:SetScript("OnDragStop", function()
+		UISettingsFrame:StopMovingOrSizing()	
+	end)	
 	UISettingsFrame:Show() 
 	table.insert(UISpecialFrames, "UISettingsFrame")
 	local openSettingsButton = CreateFrame("Button", "OpenSettingsButton", FillRaidFrame, "GameMenuButtonTemplate")
@@ -2279,6 +2339,7 @@ end)
 	openSettingsButton:SetText("Settings")
 	openSettingsButton:SetPoint("TOPLEFT", FillRaidFrame, "TOPLEFT", 10, -10) 
 	openSettingsButton:SetScript("OnClick", function()
+	
 		if UISettingsFrame:IsShown() then
 			UISettingsFrame:Hide()
 			ClickBlockerFrame:Hide() 
@@ -3122,7 +3183,7 @@ SuppressEditor:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
 
 SuppressEditor:SetFrameStrata("DIALOG")
 SuppressEditor:SetBackdrop({
-    bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+    bgFile = "Interface/Buttons/WHITE8X8",
     edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
     tile = true, tileSize = 16, edgeSize = 16,
     insets = { left = 4, right = 4, top = 4, bottom = 4 }
@@ -4011,7 +4072,13 @@ function CreateInstanceFrame(name, presets, label)
 
     local totalButtonWidth = buttonWidth + padding
     local totalButtonHeight = buttonHeight + padding
-    local numButtons = table.getn(presets)
+	local numButtons
+
+	if OthersButtonEnabled then 
+		numButtons = table.getn(presets) + 1
+	else
+		numButtons = table.getn(presets)
+	end
     local numColumns = math.ceil(numButtons / maxButtonsPerColumn)
     local numRows = math.min(numButtons, maxButtonsPerColumn)
 
@@ -4149,9 +4216,56 @@ function CreateInstanceFrame(name, presets, label)
     for index, preset in ipairs(presets) do
         CreatePresetButton(preset, index)
     end
-
-
 	
+if OthersButtonEnabled then
+    local othersIndex = table.getn(presets) + 1
+
+    local button = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
+    button:SetWidth(buttonWidth)
+    button:SetHeight(buttonHeight)
+
+    local column = math.floor((othersIndex - 1) / maxButtonsPerColumn)
+    local row = (othersIndex - 1) - column * maxButtonsPerColumn
+
+    local xOffset = (frame:GetWidth() - (numColumns * totalButtonWidth - padding)) / 2 + (column * totalButtonWidth)
+    local yOffset = fixedStartY - (row * totalButtonHeight)
+
+    button:SetPoint("TOPLEFT", frame, "TOPLEFT", xOffset, yOffset)
+
+    button:SetText("Others")
+
+    button:SetScript("OnClick", function()
+        frame:Hide()
+        if instanceFrames and instanceFrames["PresetDungeounOther"] then
+            instanceFrames["PresetDungeounOther"]:Show()
+        end
+    end)
+end
+------------------- open zone presets -----------------------
+local ZoneToPreset = {
+    ["Naxxramas"] = "PresetDungeounNaxxramas",
+    ["Blackwing Lair"] = "PresetDungeounBWL",
+    ["Molten Core"] = "PresetDungeounMC",
+    ["Onyxia's Lair"] = "PresetDungeounOnyxia",
+    ["Ahn'Qiraj"] = "PresetDungeounAQ40",      -- AQ40
+    ["Ruins of Ahn'Qiraj"] = "PresetDungeounAQ20",
+    ["Zul'Gurub"] = "PresetDungeounZG",
+}
+function OpenPresetForCurrentZone()
+    local zone = GetRealZoneText()
+    local frameName = ZoneToPreset[zone]
+
+    if frameName then
+        local frame = getglobal(frameName)
+        if frame then
+		    frame.headerText:SetText(zone)
+            frame:Show()
+			ClickBlockerFrame:Show() 
+        end
+    else
+        DEFAULT_CHAT_FRAME:AddMessage("No preset mapped for this zone.")
+    end
+end	
 ------------------ add bots with a slash command --------------------------
 local allPresets = {
     naxxramasPresets,
@@ -4606,6 +4720,10 @@ function openFillRaid()
     else
         FillRaidFrame:Show()
         fillRaidFrameManualClose = false
+		if FillRaidBotsSavedSettings.isZonePresetsEnabled then
+			OpenPresetForCurrentZone()			
+		end		
+
     end
 end
 
