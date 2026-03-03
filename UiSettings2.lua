@@ -65,6 +65,21 @@ local SettingsConfig = {
                         -- Samma som ovan
                     end
                 },
+                {
+					type = "button",
+					label = "Suppress",
+					tooltip = "Add/Edit Messages to be Suppressed",
+					width = 80,
+					onClick = function()
+						if SuppressEditor:IsShown() then
+							SuppressEditor:Hide()
+						else
+							RefreshSuppressList()
+							SuppressEditor:Show()
+							SuppressEditor:SetFrameLevel(200) 
+						end
+					end
+				},				
             }
         },
 
@@ -83,6 +98,14 @@ local SettingsConfig = {
                     default = true,
                     onApply = function(value) ToggleClickToFill(value) end
                 },
+                {
+                    type = "checkbox",
+                    key = "isZonePresetsEnabled",
+                    label = "Zone Presets",
+                    tooltip = "Checks what zone you are in and opens \nthe correct preset list.",
+                    default = true,
+                    onApply = function(value) ToggleZonePresets(value) end
+                },				
 
                 {
                     type = "checkbox",
@@ -131,6 +154,15 @@ local SettingsConfig = {
 
                 {
                     type = "checkbox",
+                    key = "OthersButtonsEnabled",
+                    label = "Enable Others button",
+                    tooltip = "Enables Others button on all instance frames.",
+                    default = false,
+                    onApply = function(value) ToggleOthersButton(value) end
+                },
+
+                {
+                    type = "checkbox",
                     key = "moveButtonsEnabled",
                     label = "Enable moving buttons",
                     tooltip = "Enable moving of fillraid and kick buttons.",
@@ -151,14 +183,27 @@ local SettingsConfig = {
                     end
                 },
 
+
+				{
+					type = "button",
+					label = "Button Themes",
+					tooltip = "Button Themes",
+					width = 80,
+
+					createFrame = true,
+					frameWidth = 220,
+					frameTitle = "Button Themes"
+				},
+
                 {
                     type = "checkbox",
                     key = "isSmallEnabled",
+					framename = "FillRaidBots_ButtonThemes_Frame",  -- pekar på auto-genererad frame
                     label = "Enable Small Button",
                     tooltip = "Buttons will be small.",
                     default = false,
                     onApply = function(value) ToggleSmallbuttonCheck(value) end
-                },
+                },			
             }
         },
 
@@ -245,18 +290,23 @@ local function InitializeDefaults()
 end
 
 --==================================================
--- CHECKBUTTON CREATOR (1.12 SAFE)
---==================================================
-
---==================================================
 -- CHECKBUTTON CREATOR (WoW 1.12 SAFE)
 --==================================================
-local function CreateCheckButton(parent, name, anchor, x, y, label, tooltip, value, onClick)
+local function CreateCheckButton(parent, name, anchor, x, y, label, tooltip, value, onClick, framename)
 
-    local cb = CreateFrame("CheckButton", name, parent, "UICheckButtonTemplate")
+    -- Välj dynamiskt parent-frame (Vanilla 1.12 fix)
+    local parentForItem = parent
+    if framename then
+        local globalFrame = getglobal(framename)
+        if globalFrame then
+            parentForItem = globalFrame
+        end
+    end
+
+    local cb = CreateFrame("CheckButton", name, parentForItem, "UICheckButtonTemplate")
     cb:SetWidth(20)
     cb:SetHeight(20)
-    cb:SetPoint("TOPLEFT", anchor, "TOPLEFT", x, y)
+    cb:SetPoint("TOPLEFT", parentForItem, "TOPLEFT", x, y)
 
     -- Textlabel
     cb.text = cb:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -268,21 +318,18 @@ local function CreateCheckButton(parent, name, anchor, x, y, label, tooltip, val
 
     -- Klickhändelse
     cb:SetScript("OnClick", function()
-        -- GetChecked kan returnera 1/nil i 1.12, så konvertera alltid till boolean
         local checked = cb:GetChecked() and true or false
 
-        -- Uppdatera SavedVariables
         if name and FillRaidBotsSavedSettings then
             FillRaidBotsSavedSettings[name] = checked
         end
 
-        -- Kör eventuell callback
         if onClick then
             onClick(checked)
         end
-		-- Skriv ut status i chatten
-		local status = checked and "|cFF00FF00enabled|r" or "|cFFFF0000disabled|r"
-		DEFAULT_CHAT_FRAME:AddMessage((label or name) .. ": " .. status)		
+
+        local status = checked and "|cFF00FF00enabled|r" or "|cFFFF0000disabled|r"
+        DEFAULT_CHAT_FRAME:AddMessage((label or name) .. ": " .. status)
     end)
 
     -- Tooltip
@@ -300,10 +347,21 @@ local function CreateCheckButton(parent, name, anchor, x, y, label, tooltip, val
 
     return cb
 end
-
 --==================================================
 -- UI CREATION
 --==================================================
+local function GenerateSafeFrameName(label)
+
+    if not label then
+        return nil
+    end
+
+    -- Ta bort allt som inte är bokstav eller siffra
+    local clean = string.gsub(label, "[^%w]", "")
+
+    -- Prefix så vi aldrig krockar globalt
+    return "FillRaidBots_" .. clean .. "_Frame"
+end
 
 function CreateSettingsUI()
 
@@ -311,22 +369,87 @@ function CreateSettingsUI()
         FillRaidBotsSavedSettings = {}
     end
 
-    local currentY = -20
+    --------------------------------------------------
+    -- LAYOUT BASE SETTINGS
+    --------------------------------------------------
+    local columnWidth = 170
+    local startX = 20
+    local startY = -20
+    local sectionSpacing = 8
+    local maxColumns = 2
+
+    --------------------------------------------------
+    -- ESTIMATE TOTAL HEIGHT (for auto-balance)
+    --------------------------------------------------
+    local totalHeight = 0
 
     for _, section in ipairs(SettingsConfig.sections) do
+        local estimatedHeight = 40
+
+        for _, item in ipairs(section.items) do
+            if item.type == "checkbox" then
+                estimatedHeight = estimatedHeight + 25
+            elseif item.type == "radio" then
+                estimatedHeight = estimatedHeight + 50
+            elseif item.type == "button" then
+                estimatedHeight = estimatedHeight + 30
+            end
+        end
+
+        totalHeight = totalHeight + estimatedHeight + sectionSpacing
+    end
+
+    local maxColumnHeight = math.ceil(totalHeight / maxColumns)
+
+    --------------------------------------------------
+    -- COLUMN STATE
+    --------------------------------------------------
+    local currentColumnX = startX
+    local currentColumnHeight = 0
+    local columnsUsed = 1
+    local columnHeights = {}
+    columnHeights[1] = 0
+
+    --------------------------------------------------
+    -- BUILD SECTIONS
+    --------------------------------------------------
+    for _, section in ipairs(SettingsConfig.sections) do
+
+        local sectionFrame = CreateFrame("Frame", nil, UISettingsFrame)
+        sectionFrame:SetWidth(columnWidth)
+
+        -- Blizzard style boxed section
+        sectionFrame:SetBackdrop({
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile = true,
+            tileSize = 16,
+            edgeSize = 12,
+            insets = { left = 3, right = 3, top = 3, bottom = 3 }
+        })
+        sectionFrame:SetBackdropColor(0,0,0,0.6)
+
+        local sectionY = -12
 
         --------------------------------------------------
-        -- SECTION HEADER
+        -- HEADER
         --------------------------------------------------
-        local header, separator = CreateUISectionHeader(
-            UISettingsFrame,
-            UISettingsFrame,
-            section.name,
-            10,
-            currentY
-        )
+        local header = sectionFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        header:SetPoint("TOPLEFT", sectionFrame, "TOPLEFT", 8, sectionY)
+        header:SetText(section.name)
 
-        currentY = currentY - 30
+        sectionY = sectionY - 15
+
+        --------------------------------------------------
+        -- SEPARATOR
+        --------------------------------------------------
+        local separator = sectionFrame:CreateTexture(nil, "ARTWORK")
+        separator:SetHeight(1)
+        separator:SetTexture(1,1,1,0.2)
+        separator:SetPoint("TOPLEFT", sectionFrame, "TOPLEFT", 8, sectionY)
+        separator:SetPoint("TOPRIGHT", sectionFrame, "TOPRIGHT", -8, sectionY)
+
+        sectionY = sectionY - 12
 
         --------------------------------------------------
         -- ITEMS
@@ -336,111 +459,253 @@ function CreateSettingsUI()
             --------------------------------------------------
             -- CHECKBOX
             --------------------------------------------------
-            if item.type == "checkbox" then
+			if item.type == "checkbox" then
 
-                local currentItem = item  -- 🔥 closure-safe copy
-                local key = currentItem.key
+				local key = item.key
+				local currentItem = item
 
-                local cb = CreateCheckButton(
-                    UISettingsFrame,
-                    key,
-                    UISettingsFrame,
-                    20,
-                    currentY,
-                    currentItem.label,
-                    currentItem.tooltip,
-                    FillRaidBotsSavedSettings[key],
-                    function(value)
+				local parentFrame = sectionFrame
+				local posY = sectionY
+				local posX = 8
+				local usePopupLayout = false
 
-                        FillRaidBotsSavedSettings[key] = value
+				-- Om checkbox ska in i popup
+				if currentItem.framename then
+					local customParent = getglobal(currentItem.framename)
+					if customParent then
+						parentFrame = customParent
+						usePopupLayout = true
 
-                        if currentItem.onApply then
-                            currentItem.onApply(value)
-                        end
-                    end
-                )
+						posX = 10
+						posY = customParent.nextY or -30
 
-                currentItem.frame = cb
-                currentY = currentY - 25
+						-- flytta intern Y för popup
+						customParent.nextY = posY - 25
+						customParent.contentHeight = customParent.contentHeight + 25
+						customParent:SetHeight(customParent.contentHeight + 10)
+					end
+				end
 
+				local cb = CreateCheckButton(
+					parentFrame,
+					key,
+					parentFrame,
+					posX,
+					posY,
+					currentItem.label,
+					currentItem.tooltip,
+					FillRaidBotsSavedSettings[key],
+					function(value)
+
+						FillRaidBotsSavedSettings[key] = value
+
+						if currentItem.onApply then
+							currentItem.onApply(value)
+						end
+
+						local status = value and "|cFF00FF00enabled|r" or "|cFFFF0000disabled|r"
+						DEFAULT_CHAT_FRAME:AddMessage(currentItem.label .. ": " .. status)
+					end,
+					nil
+				)
+
+				currentItem.frame = cb
+
+				-- ⭐ Endast sektion-checkboxar påverkar layout
+				if not usePopupLayout then
+					sectionY = sectionY - 25
+				end
+			
 
             --------------------------------------------------
-            -- RADIO GROUP
+            -- RADIO
             --------------------------------------------------
             elseif item.type == "radio" then
 
-                local currentItem = item  -- 🔥 closure-safe copy
-                local startX = 20
-                local spacing = 50
+                local currentItem = item
+                local spacing = 45
 
-				-- Inuti din CreateSettingsUI, där du skapar radio-knapparna
-				for i, option in ipairs(currentItem.options) do
-					local currentOption = option
-					local xPos = startX + (i - 1) * spacing
+                for i, option in ipairs(currentItem.options) do
 
-					-- Label ovanför
-					local label = UISettingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-					label:SetPoint("TOPLEFT", UISettingsFrame, "TOPLEFT", xPos, currentY)
-					label:SetText(currentOption.label)
+                    local xPos = 8 + (i - 1) * spacing
 
-					-- Checkbox nedanför
-					local cb = CreateFrame("CheckButton", nil, UISettingsFrame, "UICheckButtonTemplate")
-					cb:SetWidth(20)
-					cb:SetHeight(20)
-					cb:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 5, -2)
+                    local label = sectionFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+                    label:SetPoint("TOPLEFT", sectionFrame, "TOPLEFT", xPos, sectionY)
+                    label:SetText(option.label)
 
-					cb:SetChecked(FillRaidBotsSavedSettings[currentOption.key])
+                    local cb = CreateFrame("CheckButton", nil, sectionFrame, "UICheckButtonTemplate")
+                    cb:SetWidth(20)
+                    cb:SetHeight(20)
+                    cb:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 5, -2)
 
-					cb:SetScript("OnClick", function()
-						-- Reset hela gruppen
-						for _, opt in ipairs(currentItem.options) do
-							FillRaidBotsSavedSettings[opt.key] = false
-							if opt.frame then
-								opt.frame:SetChecked(false)
-							end
-						end
+                    cb:SetChecked(FillRaidBotsSavedSettings[option.key])
 
-						-- Markera det valda alternativet
-						FillRaidBotsSavedSettings[currentOption.key] = true
-						cb:SetChecked(true)
+                    cb:SetScript("OnClick", function()
 
-						-- Uppdatera loot-metoden direkt
-						SetLootOption(
-							FillRaidBotsSavedSettings.isFFAEnabled,
-							FillRaidBotsSavedSettings.isGroupLootEnabled,
-							FillRaidBotsSavedSettings.isMasterLootEnabled
-						)
+                        for _, opt in ipairs(currentItem.options) do
+                            FillRaidBotsSavedSettings[opt.key] = false
+                            if opt.frame then
+                                opt.frame:SetChecked(false)
+                            end
+                        end
 
-						-- Chat-feedback
-						DEFAULT_CHAT_FRAME:AddMessage(currentOption.label .. ": |cFF00FF00enabled|r")
+                        FillRaidBotsSavedSettings[option.key] = true
+                        cb:SetChecked(true)
 
-						-- Kör eventuell callback
-						if currentItem.onApply then
-							currentItem.onApply(currentOption.key)
+                        if SetLootOption then
+                            SetLootOption(
+                                FillRaidBotsSavedSettings.isFFAEnabled,
+                                FillRaidBotsSavedSettings.isGroupLootEnabled,
+                                FillRaidBotsSavedSettings.isMasterLootEnabled
+                            )
+                        end
+
+                        DEFAULT_CHAT_FRAME:AddMessage(option.label .. ": |cFF00FF00enabled|r")
+                    end)
+
+                    option.frame = cb
+                end
+
+                sectionY = sectionY - 50
+
+            --------------------------------------------------
+            -- BUTTON
+            --------------------------------------------------
+			elseif item.type == "button" then
+
+				local currentItem = item
+
+				local btn = CreateFrame("Button", nil, sectionFrame, "GameMenuButtonTemplate")
+				btn:SetWidth(currentItem.width or 120)
+				btn:SetHeight(20)
+				btn:SetPoint("TOPLEFT", sectionFrame, "TOPLEFT", 8, sectionY)
+				btn:SetText(currentItem.label)
+
+				--------------------------------------------------
+				-- AUTO CREATE FRAME (WITH GLOBAL NAME)
+				--------------------------------------------------
+				if currentItem.createFrame then
+
+					-- Generera säkert globalt namn
+					local frameName = currentItem.frameName
+					if not frameName then
+						local clean = string.gsub(currentItem.label or "", "[^%w]", "")
+						frameName = "FillRaidBots_" .. clean .. "_Frame"
+					end
+
+					-- Skapa frame med GLOBALT namn
+					-- Skapa frame med GLOBALT namn
+					local popup = CreateFrame("Frame", frameName, btn)
+
+					popup:SetWidth(currentItem.frameWidth or 200)
+					popup:SetHeight(40) -- start height (minimal)
+
+					popup:SetBackdrop({
+						bgFile = "Interface/Buttons/WHITE8X8",
+						edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+						tile = true,
+						tileSize = 16,
+						edgeSize = 12,
+						insets = { left = 3, right = 3, top = 3, bottom = 3 }
+					})
+					popup:SetBackdropColor(0,0,0,0.9)
+
+					popup:SetPoint("TOPLEFT", btn, "BOTTOMLEFT", 0, -2)
+					popup:Hide()
+
+					-- Intern layout
+					popup.nextY = -30
+					popup.contentHeight = 0 -- start padding
+
+					-- Titel
+					if currentItem.frameTitle then
+						local title = popup:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+						title:SetPoint("TOP", popup, "TOP", 0, -8)
+						title:SetText(currentItem.frameTitle)
+
+						popup.contentHeight = popup.contentHeight + 20
+					end
+
+					-- Spara referenser
+					currentItem.generatedFrameName = frameName
+					currentItem.popupFrame = popup
+
+					btn:SetScript("OnClick", function()
+						if popup:IsShown() then
+							popup:Hide()
+						else
+							popup:Show()
 						end
 					end)
 
-					currentOption.frame = cb
+				else
+					-- fallback if normal button
+					btn:SetScript("OnClick", function()
+						if currentItem.onClick then
+							currentItem.onClick()
+						end
+					end)
 				end
 
-                currentY = currentY - 50
-            end
+				--------------------------------------------------
+				-- Tooltip
+				--------------------------------------------------
+				btn:SetScript("OnEnter", function()
+					if currentItem.tooltip then
+						GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
+						GameTooltip:SetText(currentItem.tooltip)
+						GameTooltip:Show()
+					end
+				end)
+
+				btn:SetScript("OnLeave", function()
+					GameTooltip:Hide()
+				end)
+
+				sectionY = sectionY - 30
+			end
         end
 
-        currentY = currentY - 10
+        --------------------------------------------------
+        -- FINALIZE SECTION HEIGHT
+        --------------------------------------------------
+        local sectionHeight = -sectionY + 6
+        sectionFrame:SetHeight(sectionHeight)
+
+        --------------------------------------------------
+        -- COLUMN WRAP
+        --------------------------------------------------
+        if currentColumnHeight + sectionHeight > maxColumnHeight then
+            columnsUsed = columnsUsed + 1
+            currentColumnX = startX + (columnsUsed - 1) * columnWidth
+            currentColumnHeight = 0
+            columnHeights[columnsUsed] = 0
+        end
+
+        sectionFrame:SetPoint(
+            "TOPLEFT",
+            UISettingsFrame,
+            "TOPLEFT",
+            currentColumnX,
+            startY - currentColumnHeight
+        )
+
+        currentColumnHeight = currentColumnHeight + sectionHeight + sectionSpacing
+        columnHeights[columnsUsed] = currentColumnHeight
     end
-	--==================================================
-	-- AUTO-RESIZE UISettingsFrame
-	--==================================================
 
-	-- Auto-resize based on currentY
-	local topPadding = 10 -- samma som startY
-	local bottomPadding = 0
+    --------------------------------------------------
+    -- FINAL FRAME SIZE
+    --------------------------------------------------
+    local tallest = 0
+    for i = 1, columnsUsed do
+        if columnHeights[i] and columnHeights[i] > tallest then
+            tallest = columnHeights[i]
+        end
+    end
 
-	-- currentY är längst ner efter sista element
-	-- Höjden = startY (top padding) minus sista currentY plus bottenpadding
-	local totalHeight = topPadding - currentY + bottomPadding
-	UISettingsFrame:SetHeight(totalHeight)
+    UISettingsFrame:SetWidth(startX + columnsUsed * columnWidth + 20)
+    UISettingsFrame:SetHeight(tallest + 30)
 end
 --==================================================
 -- APPLY SETTINGS
