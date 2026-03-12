@@ -70,7 +70,9 @@ end
 function ToggleOthersButton(isChecked)
     OthersButtonEnabled = isChecked
 end
-
+function ToggleLootType(isChecked)
+    isLootTypeEnabled = isChecked
+end
 ----------------------VIP Detector--------------------------
 local vipFrame = CreateFrame("Frame", "VIPDetectorFrame")
 local isVIP = false
@@ -109,10 +111,14 @@ vipFrame:SetScript("OnEvent", function(self, event, arg1)
                         vipListening = false
                         DebugMessage("|cffffff00[VIP SCAN DONE]|r No VIP detected.", "debuginfo")
                         self:SetScript("OnUpdate", nil)
-                        AutoRepairCheckButton:SetChecked(false)
-                        AutoRepairCheckButton:Disable()
-                        AutoRepairCheckButton.text:SetTextColor(0.5, 0.5, 0.5)
-                        AutoRepairCheckButton.text:SetText("Auto Repair (VIP ONLY)")
+						local cb = GetSettingsCheckbox("isAutoRepairEnabled")
+
+						if cb then
+							cb:SetChecked(false)
+							cb:Disable()
+							cb.text:SetTextColor(0.5,0.5,0.5)
+							cb.text:SetText("Auto Repair (VIP ONLY)")
+						end
                     end
                 end
             end)
@@ -123,11 +129,15 @@ vipFrame:SetScript("OnEvent", function(self, event, arg1)
             if msg and IsVIPMessage(msg) then
                 isVIP = true
                 FillRaidBotsSavedSettings.isVIP = true
-                AutoRepairCheckButton:SetChecked(true)
+				local cb = GetSettingsCheckbox("isAutoRepairEnabled")
+
+				if cb then
+					cb:SetChecked(true)
+					cb:Enable()
+				end
                 print("|cff00ff00[VIP DETECTED]|r You have VIP status!")
 				
                 vipListening = false
-                AutoRepairCheckButton:Enable()
                 self:SetScript("OnUpdate", nil)
             end
         end
@@ -605,34 +615,33 @@ local function isBotNameInGroup(playerName)
 end
 
 local function DetectRole(event, ...)
-    if event == "COMBAT_LOG_EVENT_UNFILTERED" then
-        
+    if event == "COMBAT_LOG_EVENTUNFILTERED" then
+
         local timestamp, subevent, _, sourceGUID, sourceName, _, _, destGUID, destName, _, _, spellID, spellName = CombatLogGetCurrentEventInfo()
 
-        
         if not sourceName or not spellName then return end
 
-        
         local normalizedPlayerName = normalizePlayerName(sourceName)
-        if not normalizedPlayerName then return end 
+        if not normalizedPlayerName then return end
 
-        
         if not isBotNameInGroup(normalizedPlayerName) then
             return
         end
 
-        
         if subevent == "SPELL_CAST_SUCCESS" or subevent == "SPELL_CAST_START" then
 
-			if spellDictionary[spellName] then
-				local role = spellDictionary[spellName].role
+            if spellDictionary[spellName] then
+                local role = spellDictionary[spellName].role
 
-				
-				if role ~= "tank" then
-					
-					updateRoleConfidence(sourceName, spellDictionary[spellName].class, role, spellDictionary[spellName].confidenceIncrease, spellName)
-				end
-			end
+                -- If this bot is already confirmed as a tank, never overwrite it
+                -- with a dps detection from a shared spell (e.g. Whirlwind on a warrior tank).
+                local existingData = playerData[normalizedPlayerName]
+                if existingData and existingData.role == "tank" then
+                    return
+                end
+
+                updateRoleConfidence(sourceName, spellDictionary[spellName].class, role, spellDictionary[spellName].confidenceIncrease, spellName)
+            end
 
         end
     end
@@ -1329,47 +1338,6 @@ local function CountRealGroupMembers()
 end
 
 
-local function buildGuildRoster()
-	local members = {}
-	for j = 1, GetNumGuildMembers() do
-		local name = GetGuildRosterInfo(j)
-		if name then
-			name = Ambiguate(name, "short")
-			members[name] = true
-		end
-	end
-
-	return members
-end
-
-local function buildFriendList()
-	local friends = {}
-	for i = 1, C_FriendList.GetNumFriends() do
-		local info = C_FriendList.GetFriendInfoByIndex(i)
-		if info and info.connected and info.name then
-			local name = Ambiguate(info.name, "short")
-			friends[name] = true
-		end
-	end
-
-	return friends
-end
-
-local guildCache, friendsCache = {}, {}
-local lastCacheTime = 0
-local CACHE_DURATION = 5 
-
-local function getCachedGuildRoster()
-    if GetTime() - lastCacheTime > CACHE_DURATION then
-        guildCache = buildGuildRoster()
-        friendsCache = buildFriendList()
-        lastCacheTime = GetTime()
-    end
-    return guildCache, friendsCache 
-end
-
-
-
 local function CheckAndRemoveDeadBots()
 	if InCombatLockdown() then return end
 
@@ -1649,15 +1617,65 @@ end
 
 
 local function GetSelectedLootMethod()
-    if AutoFFACheckButton:GetChecked() then
+    if FillRaidBotsSavedSettings.isFFAEnabled then
         return "freeforall"
-    elseif AutoGroupLootCheckButton:GetChecked() then
+    elseif FillRaidBotsSavedSettings.isGroupLootEnabled then
         return "group"
-    elseif AutoMasterLootCheckButton:GetChecked() then
+    elseif FillRaidBotsSavedSettings.isMasterLootEnabled then
         return "master"
     end
-    return "freeforall" 
 end
+
+
+--==================================================
+-- Apply loot method with delay (WoW 1.14+)
+--==================================================
+local function ApplySavedLootMethodDelayed()
+	if not isLootTypeEnabled then return end
+    -- 0.3 sekunders delay innan loot sätts
+    C_Timer.After(0.3, function()
+        -- Bara ledare kan ändra loot
+        if not (UnitIsGroupLeader("player")) then
+            return
+        end
+
+        local currentMethod, currentMaster = GetLootMethod()
+
+        if FillRaidBotsSavedSettings.isMasterLootEnabled then
+            if currentMethod ~= "master" then
+                SetLootMethod("master", UnitName("player"))
+                DEFAULT_CHAT_FRAME:AddMessage("Loot set to Master Loot")
+            end
+
+        elseif FillRaidBotsSavedSettings.isGroupLootEnabled then
+            if currentMethod ~= "group" then
+                SetLootMethod("group")
+                DEFAULT_CHAT_FRAME:AddMessage("Loot set to Group Loot")
+            end
+
+        elseif FillRaidBotsSavedSettings.isFFAEnabled then
+            if currentMethod ~= "freeforall" then
+                SetLootMethod("freeforall")
+                DEFAULT_CHAT_FRAME:AddMessage("Loot set to FFA")
+            end
+        end
+    end)
+end
+
+--==================================================
+-- Event-frame
+--==================================================
+local resetBotFrame = CreateFrame("Frame")
+resetBotFrame:RegisterEvent("RAID_ROSTER_UPDATE")
+resetBotFrame:RegisterEvent("GROUP_ROSTER_UPDATE") -- 1.14 använder GROUP_ROSTER_UPDATE istället för PARTY_MEMBERS_CHANGED
+
+resetBotFrame:SetScript("OnEvent", function(self, event, arg1)
+    -- Kör befintlig funktion
+    resetfirstbot_OnEvent()
+
+    -- Kör loot-metod med delay
+    ApplySavedLootMethodDelayed()
+end)
 
 local originalSFXVolume = nil
 
@@ -2562,7 +2580,7 @@ function CreateFillRaidUI()
 
 	UISettingsFrame:SetFrameStrata("DIALOG")
 	UISettingsFrame:SetFrameLevel(10)
-	UISettingsFrame:Hide()
+	UISettingsFrame:Show()
 	table.insert(UISpecialFrames, "UISettingsFrame")
 	local openSettingsButton = CreateFrame("Button", "OpenSettingsButton", FillRaidFrame, "GameMenuButtonTemplate")
 	openSettingsButton:SetWidth(80)
@@ -3885,7 +3903,7 @@ end)
 
 local CreditsFrame = CreateFrame("Frame", "CreditsFrame", UIParent)
 CreditsFrame:SetWidth(300)
-CreditsFrame:SetHeight(200)
+CreditsFrame:SetHeight(230)
 CreditsFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
 CreditsFrame:SetFrameStrata("DIALOG")  
 CreditsFrame:SetFrameLevel(1)  
@@ -3941,11 +3959,18 @@ CreditsFrame.header.text:SetText('Credits')
 
 local creditsData = {
     {name = "|cffffd700Pumpan|r", contribution = "Creator of the addon"},  
-    {name = "|cffffd700Dedirtyone|r", contribution = "Special thanks to Dedirtyone for his incredible generosity\nin donating €50 to help me get VIP status.\nYour support means so much and has truly motivated me \nto keep contributing to the community. \nThis addon wouldn’t be the same without people like you!"},  
-	{name = "|cffffd700TheSamurai206|r", contribution = "A huge thank you to TheSamurai206 (Zugginator) for his generous donation of €20.\nYour support means a lot and helps me continue improving this addon.\nIt's supporters like you that keep this project going!"},
-	{name = "|cffffd700Spinach|r", contribution = "A heartfelt thank you to Spinach for the generous €20 donation.\nYour support truly means a lot and motivates me to keep improving this addon.\nAmazing supporters like you are what keep this project alive!"},
-    {name = "|cffffffffGemma|r", contribution = "Thanks for Beta testing, and bug reports!"},  
-    {name = "|cffffffffTO EVERYONE ELSE!|r", contribution = "To everyone who has been supporting! \nIf you are interested in contributing in any way, \nbug reporting, beta testing, or whatever, \nplease contact me on the forum, Discord, or in-game."},  
+
+    {name = "|cffffd700Dedirtyone|r", contribution = "Special thanks to Dedirtyone for his incredible generosity\nin donating €50 to help me get VIP status.\nYour support means so much and has truly motivated me\nto keep contributing to the community.\nThis addon wouldn’t be the same without people like you!"},  
+
+    {name = "|cffffd700TheSamurai206|r", contribution = "A huge thank you to TheSamurai206 (Zugginator) for his generous donation of €20.\nYour support means a lot and helps me continue improving this addon.\nIt's supporters like you that keep this project going!"},
+
+    {name = "|cffffd700Spinach|r", contribution = "A heartfelt thank you to Spinach for the generous €20 donation.\nYour support truly means a lot and motivates me to keep improving this addon.\nAmazing supporters like you are what keep this project alive!"},
+
+    {name = "|cffffffffGemma|r", contribution = "Has been part of the project from the very beginning.\nContributed many great ideas, helped with extensive beta testing,\nand created one of the button themes used in the addon.\nYour support and feedback have been invaluable!"},  
+
+    {name = "|cffffffffNymz|r", contribution = "Since 2026, Nymz has contributed with great ideas,\ncode improvements for the 1.14 client version, bug reports,\nand also created a button theme.\nThese contributions have helped improve both the addon\nand the overall user experience."},	
+
+    {name = "|cffffffffTO EVERYONE ELSE!|r", contribution = "To everyone who has been supporting!\nIf you are interested in contributing in any way,\nbug reporting, beta testing, or whatever,\nplease contact me on the forum, Discord, or in-game."},  
 }
 
 
@@ -4264,7 +4289,7 @@ function CreateInstanceFrame(name, presets, label)
         CreatePresetButton(preset, index)
     end
 
-if OthersButtonEnabled then
+if OthersButtonEnabled and name ~= "PresetDungeounOther" then
     local othersIndex = table.getn(presets) + 1
 
     local button = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
@@ -4409,41 +4434,34 @@ end
 end
 
 
-local detectBossFrame = CreateFrame("Frame")
-detectBossFrame:Hide() 
 
-local lastDetectedBoss = nil 
-local keyPressCooldown = false 
 
 function ToggleClickToFill(isChecked)
     ClickToFillEnabled = isChecked 
-
 end
-local frame = CreateFrame("Frame")
-frame:RegisterEvent("MODIFIER_STATE_CHANGED")
 
-frame:SetScript("OnEvent", function(self, event, key, state)
-    DetectBossAndFillRaid(event, key, state)
-end)
-function DetectBossAndFillRaid(event, key, state)
+local detectBossFrame = CreateFrame("Frame")
+
+local lastDetectedBoss = nil
+local keyPressCooldown = false
+local musklick = false
+ClickToFillEnabled = ClickToFillEnabled or false
+
+local function ResetCooldown()
+    keyPressCooldown = false
+    lastDetectedBoss = nil
+end
+
+local function DetectBossAndFillRaid()
 
     if keyPressCooldown then return end
+    if not (IsControlKeyDown() and IsAltKeyDown()) then return end
 
-    if not (IsControlKeyDown() and IsAltKeyDown()) then
-        keyPressCooldown = false
-        lastDetectedBoss = nil
-        return
-    end
-
-    local bossName = UnitName("target")
-    if not bossName then
-        bossName = UnitName("mouseover")
-    end
-
+    local bossName = UnitName("target") or UnitName("mouseover")
     local zone = GetRealZoneText()
 
-    -- Boss detection
-    if bossName then
+    -- 1️⃣ Boss detection
+    if bossName and musklick then
         if bossName ~= lastDetectedBoss then
             lastDetectedBoss = bossName
             keyPressCooldown = true
@@ -4453,48 +4471,52 @@ function DetectBossAndFillRaid(event, key, state)
         else
             QueueDebugMessage("FillRaid: Same boss, skipping -> " .. bossName, "debuginfo")
         end
-        return
-    end
 
-    -- Zone fallback
-    if zone then
+        musklick = false
+        return
+
+    -- 2️⃣ Zone fallback
+    elseif zone and musklick then
         keyPressCooldown = true
         QueueDebugMessage("FillRaid: Zone fallback -> " .. zone, "debuginfo")
         SlashCmdList["FILLRAID"](zone)
+
+        musklick = false
     end
-end
 
-local function ResetCooldown()
-    keyPressCooldown = false 
-    lastDetectedBoss = nil 
-end
-
-local function CheckAndEnableDetection()
-    if ClickToFillEnabled and IsControlKeyDown() and IsAltKeyDown() then  
-        detectBossFrame:Show()
-        DetectBossAndFillRaid() 
-    else
-        detectBossFrame:Hide()
-        ResetCooldown() 
-    end
 end
 
 
+detectBossFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+detectBossFrame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
+detectBossFrame:RegisterEvent("MODIFIER_STATE_CHANGED")
 
-detectBossFrame:SetScript("OnUpdate", DetectBossAndFillRaid)
+detectBossFrame:SetScript("OnEvent", function(_, event)
 
-
-local detectBossEventFrame = CreateFrame("Frame")
-detectBossEventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
-detectBossEventFrame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
-detectBossEventFrame:RegisterEvent("MODIFIER_STATE_CHANGED") 
-detectBossEventFrame:SetScript("OnEvent", function(_, event, key)
     if event == "MODIFIER_STATE_CHANGED" then
-        if not IsControlKeyDown() and not IsAltKeyDown() then
-            ResetCooldown() 
+        if not (IsControlKeyDown() and IsAltKeyDown()) then
+            ResetCooldown()
         end
     end
-    CheckAndEnableDetection()
+
+    if ClickToFillEnabled then
+        DetectBossAndFillRaid()
+    end
+
+end)
+
+
+-- Ctrl + Alt + Click support
+WorldFrame:HookScript("OnMouseDown", function(_, button)
+
+    if button ~= "LeftButton" then return end
+    if not ClickToFillEnabled then return end
+    if not (IsControlKeyDown() and IsAltKeyDown()) then return end
+
+
+    musklick = true
+    DetectBossAndFillRaid()
+
 end)
 
 function SavePresetValues()
@@ -4646,16 +4668,60 @@ openFillRaidButton:RegisterForDrag("LeftButton")
 
 local defaultPosition = {x = -20, y = 250}
 
-
+local function GetPCPFrame()
+    return PCPFrame or PCPFrameRemake
+end
 function InitializeButtonPosition()
+
     local position = savedPositions["OpenFillRaidButton"] or defaultPosition
-    if PCPFrame then 
-        openFillRaidButton:SetPoint("CENTER", PCPFrame, "LEFT", position.x, position.y)
-    elseif PCPFrameRemake then
-        openFillRaidButton:SetPoint("LEFT", PCPFrameRemake, "LEFT", position.x -20, 0 + 100) 
+    local PCPVersionCheck = GetPCPFrame()
+
+    -- HÄMTA STYLE OFFSET
+    local offsetX = 0
+    local offsetY = 0
+
+    if FillRaidBotsSavedSettings and FillRaidBotsSavedSettings.buttonStyle then
+        local styleKey = FillRaidBotsSavedSettings.buttonStyle
+
+        for _, section in ipairs(SettingsConfig.sections) do
+            for _, item in ipairs(section.items) do
+                if item.type == "radio" and item.group == "buttonTheme" then
+                    for _, option in ipairs(item.options) do
+                        if option.key == styleKey then
+                            offsetX = option.offsetX or 0
+                            offsetY = option.offsetY or 0
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if PCPVersionCheck then
+
+        openFillRaidButton:ClearAllPoints()
+
+        if PCPVersionCheck == PCPFrameRemake then
+            openFillRaidButton:SetPoint(
+                "LEFT",
+                PCPVersionCheck,
+                "LEFT",
+                position.x - 20 + offsetX,
+                100 + offsetY
+            )
+        else
+            openFillRaidButton:SetPoint(
+                "CENTER",
+                PCPVersionCheck,
+                "LEFT",
+                position.x + offsetX,
+                position.y + offsetY
+            )
+        end
+
     end
 end
-
 
 
 
@@ -4731,8 +4797,8 @@ openFillRaidButton:SetScript("OnClick", openFillRaid)
 	openFillRaidButton:Hide()
 
 	
-	local kickAllButton = CreateFrame("Button", "OpenFillRaidButton", UIParent)
 
+	local kickAllButton = CreateFrame("Button", "OpenFillRaidButton", GetPCPFrame())
 	kickAllButton:SetScript("OnClick", function()
 		UninviteAllRaidMembers()
 		ReplaceDeadBot = {}
@@ -4741,7 +4807,7 @@ openFillRaidButton:SetScript("OnClick", openFillRaid)
 	end)
 	kickAllButton:Hide() 
 
-local reFillButton = CreateFrame("Button", "reFillButton", UIParent)
+local reFillButton = CreateFrame("Button", "reFillButton", GetPCPFrame())
 function ToggleSmallbuttonCheck(isChecked)
     SmallbuttonEnabled = isChecked
 end
@@ -4861,46 +4927,73 @@ UpdateReFillButtonVisibility()
 
 
 	
-	local function UpdateButtonPosition()
-		if (PCPFrame and PCPFrame:IsVisible()) or (PCPFrameRemake and PCPFrameRemake:IsVisible()) then
+local function UpdateButtonPosition()
 
-			InitializeButtonPosition()
+	local PCPVersionCheck = GetPCPFrame()
 
-			
-			kickAllButton:ClearAllPoints()
-			kickAllButton:SetPoint("TOP", openFillRaidButton, "BOTTOM", 0, -10) 
-			reFillButton:ClearAllPoints()
-			reFillButton:SetPoint("TOP", kickAllButton, "BOTTOM", 0, -10) 			
+	-- default spacing (original)
+	local spacing = 10
+
+	-- hämta spacing från vald theme (optional)
+	if FillRaidBotsSavedSettings and FillRaidBotsSavedSettings.buttonStyle then
+		local styleKey = FillRaidBotsSavedSettings.buttonStyle
+
+		for _, section in ipairs(SettingsConfig.sections) do
+			for _, item in ipairs(section.items) do
+				if item.type == "radio" and item.group == "buttonTheme" then
+					for _, option in ipairs(item.options) do
+						if option.key == styleKey then
+							spacing = option.spacing or spacing
+							break
+						end
+					end
+				end
+			end
 		end
 	end
 
+	if PCPVersionCheck and PCPVersionCheck:IsVisible() then
+
+		-- positionera Fill-knappen först
+		InitializeButtonPosition()
+
+		-- Kick-knappen
+		kickAllButton:ClearAllPoints()
+		kickAllButton:SetPoint("TOP", openFillRaidButton, "BOTTOM", 0, -spacing)
+
+		-- Refill-knappen
+		reFillButton:ClearAllPoints()
+		reFillButton:SetPoint("TOP", kickAllButton, "BOTTOM", 0, -spacing)
+
+	end
+end
 	
 	local visibilityFrame = CreateFrame("Frame")
+
 	visibilityFrame:SetScript("OnUpdate", function()
-		if (PCPFrame and PCPFrame:IsVisible()) or (PCPFrameRemake and PCPFrameRemake:IsVisible()) then
+		local PCPVersionCheck = GetPCPFrame()
+
+		if PCPVersionCheck and PCPVersionCheck:IsVisible() then
+
 			UpdateButtonPosition()
+
 			if not fillRaidFrameManualClose and not openFillRaidButton:IsShown() then
 				openFillRaidButton:Show()
 			end
+
 			if not kickAllButton:IsShown() then
 				kickAllButton:Show()
 			end
-			if not reFillButton:IsShown() then
 
+			if not reFillButton:IsShown() then
 				UpdateReFillButtonVisibility()
-			end				
-		elseif (PCPFrame and not PCPFrame:IsVisible()) or (PCPFrameRemake and not PCPFrameRemake:IsVisible()) then
+			end
+
+		else
 			openFillRaidButton:Hide()
 			kickAllButton:Hide()
-			FillRaidFrame:Hide()   
+			FillRaidFrame:Hide()
 			fillRaidFrameManualClose = false
-		else
-			if openFillRaidButton:IsShown() and not fillRaidFrameManualClose then
-				openFillRaidButton:Hide()
-			end
-			if kickAllButton:IsShown() then
-				kickAllButton:Hide()
-			end
 		end
 	end)
 	visibilityFrame:Show()
@@ -5109,6 +5202,85 @@ popupFrame:RegisterEvent("PLAYER_LOGIN")
 popupFrame:SetScript("OnEvent", function()
     ShowVersionPopupOnce()
 end)
+
+---------------------------------------- Daily tips in chat------------------------------------------------------------------------------
+
+local function ShowDailyTipInChat()
+	if not DailyTipEnabled then return end
+
+    if not FillRaidBotsSavedSettings then
+        FillRaidBotsSavedSettings = {}
+    end
+
+    local today = date("%Y-%m-%d")
+    if FillRaidBotsSavedSettings.lastDailyTipDate == today then
+        return
+    end
+
+    C_Timer.After(15, function()
+
+	local CMD  = "|cff00ccff"   -- command color (light blue)
+	local FEAT = "|cff00ff00"   -- feature color (green)
+	local END  = "|r"
+
+	local tips = {
+		"Adding fewer than 5 bots keeps you in party mode.",
+		"Auto Repair works automatically if you're VIP.",
+		"You can edit presets directly in-game.",
+		"Use SuppressEditor to silence bot spam.",
+		"You can quickly refill raids using presets.",
+
+		"Use " .. CMD .. "/frb help" .. END .. " to see available commands if you want to create macros.",
+		"Use " .. FEAT .. "Fast Fill" .. END .. " (Ctrl + Alt + click a boss) to automatically fill the raid.",
+		"You could add an instance name under 'boss name' to make a default preset when using Fast Fill.",
+		"You can include boss, mob, or instance names in presets to make them work with Fast Fill.",
+		"Kick All will not remove real players.",
+		
+		"Use " .. CMD .. "/frb fixgroups" .. END .. " to rebalance raid groups.",
+		"Use " .. CMD .. "/frb refill" .. END .. " to instantly replace dead bots.",
+		"Hold Ctrl + Alt and click a boss to instantly load its preset.",
+		"You can export and import presets between accounts.",
+		"FillRaidBots automatically spreads healers across raid groups.",
+		"Boss presets can be loaded using part of the boss name.",
+		"Use presets to quickly prepare raids for different dungeons.",
+		"If you have an idea, don't hesitate to contact the creator.",
+		"Did you know that if you contribute or donate to the creator of this addon, your name will be added to the credits tab?"
+	}
+
+        if not FillRaidBotsSavedSettings.usedDailyTips then
+            FillRaidBotsSavedSettings.usedDailyTips = {}
+        end
+
+        local used = FillRaidBotsSavedSettings.usedDailyTips
+        local availableIndexes = {}
+
+        for i = 1, #tips do
+            if not used[i] then
+                table.insert(availableIndexes, i)
+            end
+        end
+
+        if #availableIndexes == 0 then
+            FillRaidBotsSavedSettings.usedDailyTips = {}
+            used = FillRaidBotsSavedSettings.usedDailyTips
+
+            for i = 1, #tips do
+                table.insert(availableIndexes, i)
+            end
+        end
+
+        local randomPoolIndex = math.random(1, #availableIndexes)
+        local selectedTipIndex = availableIndexes[randomPoolIndex]
+        local selectedTip = tips[selectedTipIndex]
+
+        used[selectedTipIndex] = true
+        FillRaidBotsSavedSettings.lastDailyTipDate = today
+
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffff00[FillRaidBots Tip]|r " .. selectedTip)
+
+    end)
+end
+
 --------------------------------------------------------------------------------------------------------------------
 
 
@@ -5267,7 +5439,7 @@ frame:RegisterEvent("CHAT_MSG_ADDON")
 
 frame:SetScript("OnEvent", function(self, event, ...)
     if event == "PLAYER_LOGIN" then
-        
+		ShowDailyTipInChat()
         if not FillRaidBotsSavedSettings.userID then
             FillRaidBotsSavedSettings.userID = generateUserID()
         end
