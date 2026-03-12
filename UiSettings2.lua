@@ -8,9 +8,10 @@ local settingsLoaded = false
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGOUT")
-frame:SetScript("OnEvent", function()
+frame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
-        if arg1 == "FillRaidBots" then
+        local addonName = ...
+        if addonName == "FillRaidBots" then
             FillRaidBots_LoadSettings()
         end
     elseif event == "PLAYER_LOGOUT" then
@@ -20,7 +21,7 @@ end)
 
 
 --==================================================
--- SETTINGS CONFIG (EDIT THIS ONLY)
+-- SETTINGS CONFIG (EDIT self ONLY)
 --==================================================
 function SetLootOption(isFFA, isGroup, isMaster)
 
@@ -32,7 +33,45 @@ function SetLootOption(isFFA, isGroup, isMaster)
         SetLootMethod("master", UnitName("player"))
     end
 end
-local SettingsConfig = {
+
+local ADDON_PATH = "Interface\\AddOns\\FillRaidBots\\"
+local IMG_PATH = ADDON_PATH.."img\\"
+local HIGHLIGHT = "Interface\\Buttons\\UI-Common-MouseHilight"
+local function CreateThemeButtons(folder, width, height)
+
+    local path = IMG_PATH..folder.."\\"
+
+    return {
+
+        openFillRaidButton = {
+            width = width,
+            height = height,
+            normal = path.."fillraid",
+            highlight = HIGHLIGHT,
+            pushed = path.."fillraid"
+        },
+
+        kickAllButton = {
+            width = width,
+            height = height,
+            normal = path.."kickall",
+            highlight = HIGHLIGHT,
+            pushed = path.."kickall"
+        },
+
+        reFillButton = {
+            width = width,
+            height = height,
+            normal = path.."refill",
+            highlight = HIGHLIGHT,
+            pushed = path.."refill"
+        }
+
+    }
+
+end
+
+SettingsConfig = {
 
     sections = {
 
@@ -77,6 +116,22 @@ local SettingsConfig = {
 							RefreshSuppressList()
 							SuppressEditor:Show()
 							SuppressEditor:SetFrameLevel(200) 
+						end
+					end
+				},
+				{
+					type = "checkbox",
+					key = "debugMessagesEnabled",
+					label = "Enable Debug Messages",
+					tooltip = "Shows debug messages in chat for development.",
+					default = false,
+					onApply = function(value)
+						if value then
+							debuggerFrame:Show()
+							DEFAULT_CHAT_FRAME:AddMessage("|cFF00FF00Debug messages enabled|r")
+						else
+							debuggerFrame:Hide()
+							DEFAULT_CHAT_FRAME:AddMessage("|cFFFF0000Debug messages disabled|r")
 						end
 					end
 				},				
@@ -191,19 +246,11 @@ local SettingsConfig = {
 					width = 80,
 
 					createFrame = true,
-					frameWidth = 220,
+					frameWidth = 270,
 					frameTitle = "Button Themes"
 				},
 
-                {
-                    type = "checkbox",
-                    key = "isSmallEnabled",
-					framename = "FillRaidBots_ButtonThemes_Frame",  -- pekar på auto-genererad frame
-                    label = "Enable Small Button",
-                    tooltip = "Buttons will be small.",
-                    default = false,
-                    onApply = function(value) ToggleSmallbuttonCheck(value) end
-                },			
+			
             }
         },
 
@@ -213,15 +260,23 @@ local SettingsConfig = {
         {
             name = "Loot Type",
             items = {
-
+                {
+                    type = "checkbox",
+                    key = "isLootTypeEnabled",
+                    label = "Loot type",
+                    tooltip = "Enables auto change loot type.",
+                    default = true,
+                    onApply = function(value) ToggleLootType(value) end
+                },
                 {
                     type = "radio",
                     group = "lootType",
+					textposition = "over", 
 
                     options = {
-                        { key = "isFFAEnabled", label = "FFA", default = false },
-                        { key = "isGroupLootEnabled", label = "Group", default = true },
-                        { key = "isMasterLootEnabled", label = "Master", default = false },
+                        { key = "isFFAEnabled", label = "FFA", default = false, tooltip = "Automatically set to \nFree For All loot" },
+                        { key = "isGroupLootEnabled", label = "Group", default = true, tooltip = "Automatically set to \nGroup loot" },
+                        { key = "isMasterLootEnabled", label = "Master", default = false, tooltip = "Automatically set to \nMaster loot" },
                     },
 
                     onApply = function(selectedKey)
@@ -232,6 +287,79 @@ local SettingsConfig = {
                         )
                     end
                 },
+				{
+					type = "radio",
+					group = "buttonTheme",
+					framename = "FillRaidBots_ButtonThemes_Frame",
+					layout = "vertical",
+				
+					options = {
+						
+						{
+							key = "Mini",
+							label = "Mini",
+							tooltip = "Small compact buttons",
+							default = true,
+							buttons = CreateThemeButtons("Mini", 32, 32)
+						},
+						{
+							key = "Classic",
+							label = "Classic",
+							tooltip = "Vertical tall buttons",
+							default = false,
+							buttons = CreateThemeButtons("Classic", 40, 100)
+						},
+						{
+							key = "AI",
+							label = "AI",
+							tooltip = "AI Generated Buttons",
+							default = false,
+							buttons = CreateThemeButtons("AI", 40, 100)
+						},
+						{
+							key = "AISmall",
+							label = "AISmall",
+							tooltip = "Small AI buttons",
+							default = false,
+							buttons = CreateThemeButtons("AISmall", 32, 32)
+						},
+						{
+							key = "AIHorizontal",
+							label = "AIHorizontal",
+							tooltip = "Horizontal AI buttons",
+							offsetX = -80,  -- flytta hela preview-gruppen horisontellt
+							offsetY = 0,    -- flytta hela preview-gruppen vertikalt							
+							default = false,
+							buttons = CreateThemeButtons("AIHorizontal", 100, 40)
+						},
+						{
+							key = "Nymz",
+							label = "Nymz",
+							tooltip = "Nymz theme",
+							default = false,
+							spacing = -30,
+							buttons = CreateThemeButtons("Nymz", 40, 100)
+						},
+						{
+							key = "Nymzmini",
+							label = "Nymz Mini",
+							tooltip = "Nymz small buttons",
+							default = false,
+							buttons = CreateThemeButtons("Nymzmini", 32, 32)
+						},
+						{
+							key = "Gemma",
+							label = "Gemma",
+							tooltip = "Gemma theme",
+							default = false,
+							buttons = CreateThemeButtons("Gemma", 40, 100)
+						}						
+					},
+
+					onApply = function(selectedKey, item)
+						FillRaidBotsSavedSettings.selectedButtonTheme = selectedKey
+					end
+				}				
             }
         },
     }
@@ -310,6 +438,7 @@ local function CreateCheckButton(parent, name, anchor, x, y, label, tooltip, val
 
     -- Textlabel
     cb.text = cb:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	cb.text:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
     cb.text:SetPoint("LEFT", cb, "RIGHT", 5, 0)
     cb.text:SetText(label)
 
@@ -415,7 +544,7 @@ function CreateSettingsUI()
     --------------------------------------------------
     for _, section in ipairs(SettingsConfig.sections) do
 
-        local sectionFrame = CreateFrame("Frame", nil, UISettingsFrame)
+        local sectionFrame = CreateFrame("Frame", nil, UISettingsFrame, "BackdropTemplate")
         sectionFrame:SetWidth(columnWidth)
 
         -- Blizzard style boxed section
@@ -520,53 +649,254 @@ function CreateSettingsUI()
             --------------------------------------------------
             -- RADIO
             --------------------------------------------------
-            elseif item.type == "radio" then
+			elseif item.type == "radio" then
 
-                local currentItem = item
-                local spacing = 45
+				local currentItem = item
+				local parentFrame = sectionFrame
+				local usePopupLayout = false
+				local posX = 8
+				local posY = sectionY
 
-                for i, option in ipairs(currentItem.options) do
+				if currentItem.framename then
+					local customParent = getglobal(currentItem.framename)
+					if customParent then
+						parentFrame = customParent
+						usePopupLayout = true
+						posX = 10
+						posY = customParent.nextY or -30
 
-                    local xPos = 8 + (i - 1) * spacing
+						if not customParent.contentHeight then
+							customParent.contentHeight = 0
+						end
+					end
+				end
 
-                    local label = sectionFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-                    label:SetPoint("TOPLEFT", sectionFrame, "TOPLEFT", xPos, sectionY)
-                    label:SetText(option.label)
+				local layout = currentItem.layout or "horizontal"
+				local textPosition = currentItem.textposition or "side"
 
-                    local cb = CreateFrame("CheckButton", nil, sectionFrame, "UICheckButtonTemplate")
-                    cb:SetWidth(20)
-                    cb:SetHeight(20)
-                    cb:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 5, -2)
+				local extraLabelHeight = 0
+				if textPosition == "over" then
+					extraLabelHeight = 14
+				end
 
-                    cb:SetChecked(FillRaidBotsSavedSettings[option.key])
+				local spacingX = 50
+				local spacingY = 28 + extraLabelHeight
+				local optionCount = table.getn(currentItem.options)
 
-                    cb:SetScript("OnClick", function()
+				--------------------------------------------------
+				-- PREVIEW GROUP
+				--------------------------------------------------
 
-                        for _, opt in ipairs(currentItem.options) do
-                            FillRaidBotsSavedSettings[opt.key] = false
-                            if opt.frame then
-                                opt.frame:SetChecked(false)
-                            end
-                        end
+				local groupPreview = {}
 
-                        FillRaidBotsSavedSettings[option.key] = true
-                        cb:SetChecked(true)
+				for i = 1, optionCount do
+					if currentItem.options[i].buttons then
 
-                        if SetLootOption then
-                            SetLootOption(
-                                FillRaidBotsSavedSettings.isFFAEnabled,
-                                FillRaidBotsSavedSettings.isGroupLootEnabled,
-                                FillRaidBotsSavedSettings.isMasterLootEnabled
-                            )
-                        end
+						groupPreview.fill = parentFrame:CreateTexture(nil, "ARTWORK")
+						groupPreview.kick = parentFrame:CreateTexture(nil, "ARTWORK")
+						groupPreview.refill = parentFrame:CreateTexture(nil, "ARTWORK")
 
-                        DEFAULT_CHAT_FRAME:AddMessage(option.label .. ": |cFF00FF00enabled|r")
-                    end)
+						break
+					end
+				end
 
-                    option.frame = cb
-                end
+				--------------------------------------------------
+				-- CREATE RADIO BUTTONS
+				--------------------------------------------------
 
-                sectionY = sectionY - 50
+				local i
+				for i = 1, optionCount do
+
+					local option = currentItem.options[i]
+
+					local xOffset = posX
+					local yOffset = posY
+
+					if layout == "horizontal" then
+						xOffset = posX + ((i - 1) * spacingX)
+					else
+						yOffset = posY - ((i - 1) * spacingY)
+					end
+
+					local cb = CreateFrame("CheckButton", nil, parentFrame, "UICheckButtonTemplate")
+					cb:SetPoint("TOPLEFT", parentFrame, "TOPLEFT", xOffset, yOffset - extraLabelHeight)
+					cb:SetWidth(20)
+					cb:SetHeight(20)
+
+					cb:SetChecked(FillRaidBotsSavedSettings[option.key] and true or false)
+
+					--------------------------------------------------
+					-- LABEL
+					--------------------------------------------------
+
+					local label = parentFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+					label:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+					label:SetText(option.label)
+
+					if textPosition == "over" then
+						label:SetPoint("BOTTOM", cb, "TOP", 0, 2)
+					else
+						label:SetPoint("LEFT", cb, "RIGHT", 5, 0)
+					end
+
+					--------------------------------------------------
+					-- TOOLTIP
+					--------------------------------------------------
+
+					local tooltipText = option.tooltip or currentItem.tooltip
+
+					if tooltipText then
+						cb:SetScript("OnEnter", function(self)
+							GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+							GameTooltip:SetText(tooltipText, 1,1,1,1)
+							GameTooltip:Show()
+						end)
+
+						cb:SetScript("OnLeave", function()
+							GameTooltip:Hide()
+						end)
+					end
+
+					--------------------------------------------------
+					-- CLICK
+					--------------------------------------------------
+
+					cb:SetScript("OnClick", function()
+
+						for j = 1, optionCount do
+							local opt = currentItem.options[j]
+							FillRaidBotsSavedSettings[opt.key] = false
+							if opt.frame then
+								opt.frame:SetChecked(false)
+							end
+						end
+
+						FillRaidBotsSavedSettings[option.key] = true
+						FillRaidBotsSavedSettings.buttonStyle = option.key
+						cb:SetChecked(true)
+
+						ApplyButtonStyle(option.key)
+
+						--------------------------------------------------
+						-- UPDATE PREVIEW
+						--------------------------------------------------
+
+						if groupPreview.fill and option.buttons then
+
+							local fill = option.buttons["openFillRaidButton"]
+							local kick = option.buttons["kickAllButton"]
+							local refill = option.buttons["reFillButton"]
+
+							if fill then
+
+								local isHorizontal = fill.width >= fill.height
+
+								groupPreview.fill:ClearAllPoints()
+								groupPreview.kick:ClearAllPoints()
+								groupPreview.refill:ClearAllPoints()
+
+								if isHorizontal then
+
+									groupPreview.fill:SetPoint("TOPLEFT", parentFrame, "TOPLEFT", posX + 120, posY)
+									groupPreview.kick:SetPoint("TOPLEFT", groupPreview.fill, "BOTTOMLEFT", 0, -2)
+									groupPreview.refill:SetPoint("TOPLEFT", groupPreview.kick, "BOTTOMLEFT", 0, -2)
+
+								else
+
+									groupPreview.fill:SetPoint("TOPLEFT", parentFrame, "TOPLEFT", posX + 120, posY)
+									groupPreview.kick:SetPoint("LEFT", groupPreview.fill, "RIGHT", 4, 0)
+									groupPreview.refill:SetPoint("LEFT", groupPreview.kick, "RIGHT", 4, 0)
+
+								end
+
+								groupPreview.fill:SetTexture(fill.normal)
+								groupPreview.fill:SetWidth(fill.width)
+								groupPreview.fill:SetHeight(fill.height)
+
+							end
+
+							if kick then
+								groupPreview.kick:SetTexture(kick.normal)
+								groupPreview.kick:SetWidth(kick.width)
+								groupPreview.kick:SetHeight(kick.height)
+							end
+
+							if refill then
+								groupPreview.refill:SetTexture(refill.normal)
+								groupPreview.refill:SetWidth(refill.width)
+								groupPreview.refill:SetHeight(refill.height)
+							end
+
+						end
+
+						if currentItem.onApply then
+							currentItem.onApply(option.key, currentItem)
+						end
+
+					end)
+
+					option.frame = cb
+				end
+
+				--------------------------------------------------
+				-- DEFAULT PREVIEW
+				--------------------------------------------------
+
+				for i = 1, optionCount do
+					local opt = currentItem.options[i]
+
+					if FillRaidBotsSavedSettings[opt.key] and opt.buttons and groupPreview.fill then
+
+						local fill = opt.buttons["openFillRaidButton"]
+						local kick = opt.buttons["kickAllButton"]
+						local refill = opt.buttons["reFillButton"]
+
+						local isHorizontal = fill.width > fill.height
+
+						if isHorizontal then
+							groupPreview.fill:SetPoint("TOPLEFT", parentFrame, "TOPLEFT", posX + 120, posY)
+							groupPreview.kick:SetPoint("TOPLEFT", groupPreview.fill, "BOTTOMLEFT", 0, -2)
+							groupPreview.refill:SetPoint("TOPLEFT", groupPreview.kick, "BOTTOMLEFT", 0, -2)
+						else
+							groupPreview.fill:SetPoint("TOPLEFT", parentFrame, "TOPLEFT", posX + 120, posY)
+							groupPreview.kick:SetPoint("LEFT", groupPreview.fill, "RIGHT", 4, 0)
+							groupPreview.refill:SetPoint("LEFT", groupPreview.kick, "RIGHT", 4, 0)
+						end
+
+						groupPreview.fill:SetTexture(fill.normal)
+						groupPreview.fill:SetWidth(fill.width)
+						groupPreview.fill:SetHeight(fill.height)
+
+						groupPreview.kick:SetTexture(kick.normal)
+						groupPreview.kick:SetWidth(kick.width)
+						groupPreview.kick:SetHeight(kick.height)
+
+						groupPreview.refill:SetTexture(refill.normal)
+						groupPreview.refill:SetWidth(refill.width)
+						groupPreview.refill:SetHeight(refill.height)
+
+					end
+				end
+
+				--------------------------------------------------
+				-- HEIGHT
+				--------------------------------------------------
+
+				local totalHeight = 0
+
+				if layout == "horizontal" then
+					totalHeight = spacingY
+				else
+					totalHeight = optionCount * spacingY
+				end
+
+				if usePopupLayout then
+					parentFrame.nextY = posY - totalHeight - 10
+					parentFrame.contentHeight = parentFrame.contentHeight + totalHeight
+					parentFrame:SetHeight(parentFrame.contentHeight + 20)
+				else
+					sectionY = sectionY - totalHeight - 10
+				end
 
             --------------------------------------------------
             -- BUTTON
@@ -580,7 +910,8 @@ function CreateSettingsUI()
 				btn:SetHeight(20)
 				btn:SetPoint("TOPLEFT", sectionFrame, "TOPLEFT", 8, sectionY)
 				btn:SetText(currentItem.label)
-
+				local textWidth = btn:GetFontString():GetStringWidth()
+				btn:SetWidth(textWidth + 20)
 				--------------------------------------------------
 				-- AUTO CREATE FRAME (WITH GLOBAL NAME)
 				--------------------------------------------------
@@ -595,7 +926,7 @@ function CreateSettingsUI()
 
 					-- Skapa frame med GLOBALT namn
 					-- Skapa frame med GLOBALT namn
-					local popup = CreateFrame("Frame", frameName, btn)
+					local popup = CreateFrame("Frame", frameName, btn, "BackdropTemplate")
 
 					popup:SetWidth(currentItem.frameWidth or 200)
 					popup:SetHeight(40) -- start height (minimal)
@@ -775,18 +1106,60 @@ function FillRaidBots_LoadSettings()
         FillRaidBotsSavedSettings = {}
     end
 
+	if not FillRaidBotsSavedSettings.selectedButtonTheme then
+		for _, section in ipairs(SettingsConfig.sections) do
+			for _, item in ipairs(section.items) do
+				if item.type == "radio" and item.group == "buttonTheme" then
+					for _, option in ipairs(item.options) do
+						if option.default then
+							FillRaidBotsSavedSettings.selectedButtonTheme = option.key
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if FillRaidBotsSavedSettings.isAutoRepairEnabled == nil then
+		for _, section in ipairs(SettingsConfig.sections) do
+			for _, item in ipairs(section.items) do
+				if item.type == "checkbox" and item.key == "isAutoRepairEnabled" then
+					FillRaidBotsSavedSettings.isAutoRepairEnabled = item.default
+					break
+				end
+			end
+		end
+	end
+
     InitializeDefaults()
 
     if not settingsLoaded then
         settingsLoaded = true
         CreateSettingsUI()
     end
-
+	ApplyButtonStyle(FillRaidBotsSavedSettings.selectedButtonTheme)
     ApplySavedSettings()
 end
 
 --==================================================
 -- EVENT HANDLER
 --==================================================
+function GetSettingsCheckbox(key)
 
+    for _, section in ipairs(SettingsConfig.sections) do
+        for _, item in ipairs(section.items) do
+            if item.type == "checkbox" and item.key == key then
+                return item.frame
+            end
+        end
+    end
 
+end
+
+function GetSetting(key)
+    if FillRaidBotsSavedSettings then
+        return FillRaidBotsSavedSettings[key]
+    end
+    return nil
+end
