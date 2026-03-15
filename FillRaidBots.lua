@@ -5011,7 +5011,14 @@ function ApplyButtonStyle(styleKey)
     end
 end
 
-
+function UpdateButtonSizes()
+    local size = FillRaidBotsSavedSettings.ButtonSize or 40
+    for _, btn in pairs({openFillRaidButton, kickAllButton, reFillButton}) do
+        btn:SetWidth(size)
+        btn:SetHeight(size)
+    end
+    RepositionButtonsFromOffset() -- adjust stacking/spacings
+end
 
 ToggleSmallbuttonCheck(SmallbuttonEnabled or false) 
 

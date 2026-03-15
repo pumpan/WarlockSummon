@@ -306,7 +306,29 @@ SettingsConfig = {
 					onApply = function(value)
 						RepositionButtonsFromOffset()
 					end
-				},				
+				},
+				{
+					type = "slider",
+					key = "ButtonSize",
+					label = "Button Size",
+					min = 20,
+					max = 120,
+					step = 1,
+					precision = 0,
+					default = 40,  -- a safe fallback
+
+					onPreview = function(value)
+						if not FillRaidBotsSavedSettings then return end
+						FillRaidBotsSavedSettings.ButtonSize = value
+						UpdateButtonSizes()
+					end,
+
+					onApply = function(value)
+						if not FillRaidBotsSavedSettings then return end
+						FillRaidBotsSavedSettings.ButtonSize = value
+						UpdateButtonSizes()
+					end
+				},			
             }
         },
 
