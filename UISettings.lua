@@ -289,6 +289,25 @@ SettingsConfig = {
                         FillRaidBots_ResetButtonPositions()
                     end
                 },
+				-- pumpan: added checkbox for horizontal buttons
+				{
+				    type = "checkbox", 
+				    key = "ButtonLayoutHorizontal",
+				    label = "Horizontal Buttons",
+				    tooltip = "Display FillRaid buttons horizontally.",
+				    default = false,
+				
+				    onChange = function(value)
+				        if value then
+				            FillRaidBotsSavedSettings.ButtonLayout = "horizontal"
+				        else
+				            FillRaidBotsSavedSettings.ButtonLayout = "vertical"
+				        end
+				
+				        RepositionButtonsFromOffset()
+				    end
+				},
+				-- pumpan: added sliders for spacing and button size
 				{
 					type = "slider",
 					key = "ButtonSpacing",
