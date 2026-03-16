@@ -4734,6 +4734,8 @@ end
 
 		
 local openFillRaidButton = CreateFrame("Button", "OpenFillRaidButton", PCPFrame)  
+--Nymz MoveButtons: Global alias so FillRaidBots_ResetButtonPositions can access this local.
+FRB_openFillRaidButton = openFillRaidButton
 openFillRaidButton:SetMovable(true)  
 openFillRaidButton:EnableMouse(true)  
 --Nymz MoveButtons: SetUserPlaced(true) tells the engine the button is freely positioned.
@@ -4799,8 +4801,9 @@ function InitializeButtonPosition()
                     savedPosition.absX / uiScale, savedPosition.absY / uiScale)
             end
         elseif PCPVersionCheck == PCPFrameRemake then
-            openFillRaidButton:SetPoint("LEFT", PCPVersionCheck, "LEFT",
-                defaultPosition.x - 20 + offsetX, 100 + offsetY)
+			-- Pumpan: changed from left to right to allow buttons growing from right to left
+            openFillRaidButton:SetPoint("RIGHT", PCPVersionCheck, "LEFT",
+                defaultPosition.x + 10 + offsetX, 100 + offsetY)
         else
             openFillRaidButton:SetPoint("CENTER", PCPVersionCheck, "LEFT",
                 defaultPosition.x + offsetX, defaultPosition.y + offsetY)
@@ -4939,6 +4942,8 @@ openFillRaidButton:SetScript("OnClick", openFillRaid)
 	
 
 	local kickAllButton = CreateFrame("Button", "OpenFillRaidButton", GetPCPFrame())
+	--Nymz MoveButtons: Global alias so FillRaidBots_ResetButtonPositions can access this local.
+	FRB_kickAllButton = kickAllButton
 	kickAllButton:SetScript("OnClick", function()
 		UninviteAllRaidMembers()
 		ReplaceDeadBot = {}
@@ -4948,6 +4953,8 @@ openFillRaidButton:SetScript("OnClick", openFillRaid)
 	kickAllButton:Hide() 
 
 local reFillButton = CreateFrame("Button", "reFillButton", GetPCPFrame())
+--Nymz MoveButtons: Global alias so FillRaidBots_ResetButtonPositions can access this local.
+FRB_reFillButton = reFillButton
 function ToggleSmallbuttonCheck(isChecked)
     SmallbuttonEnabled = isChecked
 end
@@ -5012,14 +5019,54 @@ function ApplyButtonStyle(styleKey)
 end
 
 function UpdateButtonSizes()
-    local size = FillRaidBotsSavedSettings.ButtonSize or 40
-    for _, btn in pairs({openFillRaidButton, kickAllButton, reFillButton}) do
-        btn:SetWidth(size)
-        btn:SetHeight(size)
-    end
-    RepositionButtonsFromOffset() -- adjust stacking/spacings
-end
+    if not FillRaidBotsSavedSettings then return end
 
+    local size = FillRaidBotsSavedSettings.ButtonSize or 40
+    local themeKey = FillRaidBotsSavedSettings.selectedButtonTheme or "Mini"
+
+    local w, h = size, size 
+
+    -- fetch the button sizes from the uisettingsfile
+    for _, section in ipairs(SettingsConfig.sections) do
+        for _, item in ipairs(section.items) do
+            if item.type == "radio" and item.group == "buttonTheme" then
+                for _, option in ipairs(item.options) do
+                    if option.key == themeKey and option.buttons then
+                        local btn = option.buttons.openFillRaidButton
+                        if btn then
+                            local origW = btn.width or 32
+                            local origH = btn.height or 32
+
+                            if origW >= origH then
+                                -- horizontal propotions
+                                w = size
+                                h = math.floor(size * (origH / origW) + 0.5)
+                            else
+                                -- vertikal propotions
+                                h = size
+                                w = math.floor(size * (origW / origH) + 0.5)
+                            end
+
+                        end
+                        break
+                    end
+                end
+            end
+        end
+    end
+
+    -- Uppdates the buttons
+    for _, btn in pairs({openFillRaidButton, kickAllButton, reFillButton}) do
+        btn:SetWidth(w)
+        btn:SetHeight(h)
+    end
+
+    RepositionButtonsFromOffset()
+end
+function ApplyButtonLayout(layout)
+    FillRaidBotsSavedSettings.ButtonLayout = layout
+    RepositionButtonsFromOffset()
+end
 ToggleSmallbuttonCheck(SmallbuttonEnabled or false) 
 
 
@@ -5072,34 +5119,17 @@ UpdateReFillButtonVisibility()
 --=====================================================
 local function GetButtonLayout()
 
-    -- SavedVariables override (checkbox / dropdown)
     if FillRaidBotsSavedSettings
     and FillRaidBotsSavedSettings.ButtonLayout ~= nil then
+
+        if FillRaidBotsSavedSettings.ButtonLayout == true then
+            return "horizontal"
+        end
+
         return FillRaidBotsSavedSettings.ButtonLayout
     end
 
-    -- fallback default
-    local layout = "vertical"
-
-    -- theme fallback
-    if FillRaidBotsSavedSettings and FillRaidBotsSavedSettings.selectedButtonTheme then
-        local styleKey = FillRaidBotsSavedSettings.selectedButtonTheme
-
-        for _, section in ipairs(SettingsConfig.sections) do
-            for _, item in ipairs(section.items) do
-                if item.type == "radio" and item.group == "buttonTheme" then
-                    for _, option in ipairs(item.options) do
-                        if option.key == styleKey then
-                            layout = option.layout or layout
-                            break
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    return layout
+    return "vertical"
 end
 -- =====================================================
 -- Refractored to allow spacing from the UIsettings file
@@ -5142,46 +5172,59 @@ end
 -- then stacks kickAllButton and reFillButton below it.
 -- Called once when PCP position changes (detected in OnUpdate), and on load via PLAYER_LOGIN.
 function RepositionButtonsFromOffset()
-	if openFillRaidButton.isMoving then return end
-	local savedPosition = savedPositions["OpenFillRaidButton"]
-	local uiScale = UIParent:GetEffectiveScale()
+    if openFillRaidButton.isMoving then return end
+    local savedPosition = savedPositions["OpenFillRaidButton"]
+    local uiScale = UIParent:GetEffectiveScale()
+    local layout = GetButtonLayout()
+    local spacing = GetButtonSpacing()
 
-	if FillRaidBotsSavedSettings.moveButtonsRelative then
-		--Nymz MoveButtons: Relative mode - reposition using PCP physical position + stored offset.
-		if not savedPosition or not savedPosition.offsetX then return end
-		local pcp = GetPCPFrame()
-		local pcpPhysX = pcp:GetLeft() * pcp:GetEffectiveScale()
-		local pcpPhysY = pcp:GetTop()  * pcp:GetEffectiveScale()
-		local newPhysX = pcpPhysX + savedPosition.offsetX
-		local newPhysY = pcpPhysY + savedPosition.offsetY
-		openFillRaidButton:ClearAllPoints()
-		openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", newPhysX / uiScale, newPhysY / uiScale)
-	elseif FillRaidBotsSavedSettings.moveButtonsEnabled then
-		--Nymz MoveButtons: Free mode - restore absolute physical position.
-		if not savedPosition or not savedPosition.absX then return end
-		openFillRaidButton:ClearAllPoints()
-		openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", savedPosition.absX / uiScale, savedPosition.absY / uiScale)
-	end
+    local pcp = GetPCPFrame()
+    if not pcp then return end
+    local pcpPhysX = pcp:GetLeft() * pcp:GetEffectiveScale()
+    local pcpPhysY = pcp:GetTop()  * pcp:GetEffectiveScale()
 
-	--Nymz MoveButtons: Always stack kickAllButton and reFillButton below openFillRaidButton.
+    -- Placering beroende p堭ode
+    if FillRaidBotsSavedSettings.moveButtonsRelative then
+        -- Relative mode: exakt offset fr宠PCP
+        if not savedPosition or not savedPosition.offsetX then return end
+        openFillRaidButton:ClearAllPoints()
+        openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT",
+            (pcpPhysX + savedPosition.offsetX) / uiScale,
+            (pcpPhysY + savedPosition.offsetY) / uiScale)
+    elseif FillRaidBotsSavedSettings.moveButtonsEnabled then
+        -- Free mode: exakt abs position
+        if not savedPosition or not savedPosition.absX then return end
+        openFillRaidButton:ClearAllPoints()
+        openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT",
+            savedPosition.absX / uiScale, savedPosition.absY / uiScale)
+    else
+        -- Fixed mode: knappen 䲠barn till PCP, h䲠kan horisontell layout centreras
+        if layout == "horizontal" then
+            local w1, w2, w3 = openFillRaidButton:GetWidth(), kickAllButton:GetWidth(), reFillButton:GetWidth()
+            local totalWidth = w1 + w2 + w3 + (spacing * 2)
+            --local extraOffset = 30
+            openFillRaidButton:ClearAllPoints()
+            openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT",
+                (pcpPhysX - totalWidth) / uiScale,
+                pcpPhysY / uiScale)
+        else
+            openFillRaidButton:ClearAllPoints()
+            openFillRaidButton:SetPoint("TOPLEFT", pcp, "TOPLEFT", 0, 0)
+        end
+    end
 
+    -- Placera kickAllButton och reFillButton
+    kickAllButton:ClearAllPoints()
+    reFillButton:ClearAllPoints()
 
-
-	local spacing = GetButtonSpacing()
-	local layout = GetButtonLayout()
-	
-	kickAllButton:ClearAllPoints()
-	reFillButton:ClearAllPoints()
-	
-	if layout == "horizontal" then
-	    -- Horizontal layout
-	    kickAllButton:SetPoint("LEFT", openFillRaidButton, "RIGHT", spacing, 0)
-	    reFillButton:SetPoint("LEFT", kickAllButton, "RIGHT", spacing, 0)
-	else
-	    -- Vertical layout (default)
-	    kickAllButton:SetPoint("TOP", openFillRaidButton, "BOTTOM", 0, -spacing)
-	    reFillButton:SetPoint("TOP", kickAllButton, "BOTTOM", 0, -spacing)
-	end
+    if layout == "horizontal" then
+        kickAllButton:SetPoint("LEFT", openFillRaidButton, "RIGHT", spacing, 0)
+        reFillButton:SetPoint("LEFT", kickAllButton, "RIGHT", spacing, 0)
+    else
+        kickAllButton:SetPoint("TOP", openFillRaidButton, "BOTTOM", 0, -spacing)
+        reFillButton:SetPoint("TOP", kickAllButton, "BOTTOM", 0, -spacing)
+		InitializeButtonPosition()
+    end
 end
 
 --Nymz MoveButtons: Track PCP position to detect movement.
@@ -5199,17 +5242,15 @@ visibilityFrame:SetScript("OnUpdate", function(self, elapsed)
 			openFillRaidButton:Show()
 		end
 		if not kickAllButton:IsShown() then
-			local spacing = GetButtonSpacing()
-			kickAllButton:ClearAllPoints()
-			kickAllButton:SetPoint("TOP", openFillRaidButton, "BOTTOM", 0, -spacing)
 			kickAllButton:Show()
 		end
+
 		if not reFillButton:IsShown() then
-			local spacing = GetButtonSpacing()
-			reFillButton:ClearAllPoints()
-			reFillButton:SetPoint("TOP", kickAllButton, "BOTTOM", 0, -spacing)
 			UpdateReFillButtonVisibility()
 		end
+
+		-- Pumpan: Always ensure correct layout
+		RepositionButtonsFromOffset()
 
 		--Nymz MoveButtons: Detect PCP movement and reposition buttons immediately when it moves.
 		-- No debounce - fires only on frames where PCP actually changed position.
@@ -5365,23 +5406,78 @@ end
 local c = 2
 
 
+-- Pumpan: get default button sizes for reset button
+function GetThemeDefaultSize()
+
+    local themeKey = FillRaidBotsSavedSettings.selectedButtonTheme or "Mini"
+
+    for _, section in ipairs(SettingsConfig.sections) do
+        for _, item in ipairs(section.items) do
+            if item.type == "radio" and item.group == "buttonTheme" then
+                for _, option in ipairs(item.options) do
+                    if option.key == themeKey and option.buttons then
+                        local btn = option.buttons.openFillRaidButton
+                        if btn then
+                            local w = btn.width or 32
+                            local h = btn.height or 32
+                            return math.max(w, h) -- IMPORTANT
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return 40
+end
+
 --Nymz MoveButtons: Global reset function - resets mode to Fixed and clears all saved positions.
 -- Called by the /frb resetbuttons slash command and the Reset Buttons UI button.
+
+
 function FillRaidBots_ResetButtonPositions()
+
     FillRaidBotsSavedSettings.buttonMoveModeFixed    = true
     FillRaidBotsSavedSettings.buttonModeMoveFree     = false
     FillRaidBotsSavedSettings.buttonMoveModeRelative = false
     FillRaidBotsSavedSettings.moveButtonsEnabled     = false
     FillRaidBotsSavedSettings.moveButtonsRelative    = false
+
     savedPositions["OpenFillRaidButton"] = nil
     FillRaidBotsSavedSettings.buttonPosition = nil
     FillRaidBotsSavedSettings.buttonPositionRelative = nil
+
+    -- reset size to theme original
+    FillRaidBotsSavedSettings.ButtonSize = GetThemeDefaultSize()
+
+    -- reset spacing to slider default
+    FillRaidBotsSavedSettings.ButtonSpacing = 4
+    FillRaidBotsSavedSettings.ButtonLayout = "vertical"
+
+    --Nymz MoveButtons: Reparent all three buttons to UIParent before resizing.
+    -- They may be on different parent frames (PCPFrame vs PCPFrameRemake) with different
+    -- effective scales, causing SetWidth/SetHeight to produce visually different sizes.
+    -- UIParent is always scale 1.0 and the same for all three  sizing them there
+    -- guarantees consistent visual output. They are reparented back afterwards via
+    -- InitializeButtonPosition and ToggleButtonMovement.
+    if FRB_openFillRaidButton then FRB_openFillRaidButton:SetParent(UIParent) end
+    if FRB_kickAllButton      then FRB_kickAllButton:SetParent(UIParent) end
+    if FRB_reFillButton       then FRB_reFillButton:SetParent(UIParent) end
+
     if ApplySavedSettings then
         ApplySavedSettings()
     end
+
+    --Nymz MoveButtons: Apply style and sizes AFTER reparenting so all three buttons
+    -- are in the same scale space before SetWidth/SetHeight run.
     InitializeButtonPosition()
-    DEFAULT_CHAT_FRAME:AddMessage("FillRaidBots: Buttons reset to default (Fixed).", 0.0, 1.0, 0.0)
-    QueueDebugMessage("OpenFillRaidButton reset to default Fixed mode.", "debuginfo")
+    ApplyButtonStyle(FillRaidBotsSavedSettings.selectedButtonTheme)
+    UpdateButtonSizes()
+    RepositionButtonsFromOffset()
+
+    DEFAULT_CHAT_FRAME:AddMessage("FillRaidBots: Buttons reset to theme default.", 0.0, 1.0, 0.0)
+
+
 end
 
 SLASH_FRB1 = "/frb"
