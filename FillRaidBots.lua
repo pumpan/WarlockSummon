@@ -5067,7 +5067,40 @@ end
 reFillButton:SetScript("OnClick", RefillBots)
 
 UpdateReFillButtonVisibility()
+--=====================================================
+-- GetButtonLayout - vertical or horizontal
+--=====================================================
+local function GetButtonLayout()
 
+    -- SavedVariables override (checkbox / dropdown)
+    if FillRaidBotsSavedSettings
+    and FillRaidBotsSavedSettings.ButtonLayout ~= nil then
+        return FillRaidBotsSavedSettings.ButtonLayout
+    end
+
+    -- fallback default
+    local layout = "vertical"
+
+    -- theme fallback
+    if FillRaidBotsSavedSettings and FillRaidBotsSavedSettings.selectedButtonTheme then
+        local styleKey = FillRaidBotsSavedSettings.selectedButtonTheme
+
+        for _, section in ipairs(SettingsConfig.sections) do
+            for _, item in ipairs(section.items) do
+                if item.type == "radio" and item.group == "buttonTheme" then
+                    for _, option in ipairs(item.options) do
+                        if option.key == styleKey then
+                            layout = option.layout or layout
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return layout
+end
 -- =====================================================
 -- Refractored to allow spacing from the UIsettings file
 -- =====================================================
@@ -5103,6 +5136,7 @@ local function GetButtonSpacing()
     return spacing
 end
 
+
 --Nymz MoveButtons: RepositionButtonsFromOffset repositions openFillRaidButton using the stored
 -- physical-pixel offset from PCP (Relative mode) or absolute position (Free mode),
 -- then stacks kickAllButton and reFillButton below it.
@@ -5130,11 +5164,24 @@ function RepositionButtonsFromOffset()
 	end
 
 	--Nymz MoveButtons: Always stack kickAllButton and reFillButton below openFillRaidButton.
+
+
+
 	local spacing = GetButtonSpacing()
+	local layout = GetButtonLayout()
+	
 	kickAllButton:ClearAllPoints()
-	kickAllButton:SetPoint("TOP", openFillRaidButton, "BOTTOM", 0, -spacing)
 	reFillButton:ClearAllPoints()
-	reFillButton:SetPoint("TOP", kickAllButton, "BOTTOM", 0, -spacing)
+	
+	if layout == "horizontal" then
+	    -- Horizontal layout
+	    kickAllButton:SetPoint("LEFT", openFillRaidButton, "RIGHT", spacing, 0)
+	    reFillButton:SetPoint("LEFT", kickAllButton, "RIGHT", spacing, 0)
+	else
+	    -- Vertical layout (default)
+	    kickAllButton:SetPoint("TOP", openFillRaidButton, "BOTTOM", 0, -spacing)
+	    reFillButton:SetPoint("TOP", kickAllButton, "BOTTOM", 0, -spacing)
+	end
 end
 
 --Nymz MoveButtons: Track PCP position to detect movement.
