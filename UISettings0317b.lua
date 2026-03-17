@@ -278,6 +278,7 @@ SettingsConfig = {
 					type = "checkbox",
 					label = "Horizontal layout",
 					key = "ButtonLayout",
+					tooltip = "Enables the buttons to be aligned Horizontaly.",
 
 					get = function()
 						return FillRaidBotsSavedSettings.ButtonLayout == "horizontal"
@@ -297,6 +298,7 @@ SettingsConfig = {
 					type = "slider",
 					key = "ButtonSpacing",
 					label = "Button Spacing",
+					tooltip = "Adjust spacing between the FillRaid buttons.\nNegative values move buttons closer together.", -- Pumpan: added tooltip (20260317)
 					min = -50, --Nymz: ButtonSpacing (20260317) allow negative spacing
 					max = 50,
 					step = 1,
@@ -315,6 +317,7 @@ SettingsConfig = {
 					type = "slider",
 					key = "ButtonSize",
 					label = "Button Size",
+					tooltip = "Adjust the size of the FillRaid buttons.", -- Pumpan: added tooltip (20260317)
 					min = 20,
 					max = 120,
 					step = 1,
@@ -1118,6 +1121,7 @@ function CreateSettingsUI()
 				low:SetText(min)
 				high:SetText(max)
 
+				
 				local valueText = sectionFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 				valueText:SetPoint("LEFT", slider, "RIGHT", 8, 0)
 
@@ -1132,7 +1136,19 @@ function CreateSettingsUI()
 				end
 
 				UpdateSliderValue(saved)
-
+				-- Pumpan: added possibility for tooltip for sliders
+				if currentItem.tooltip then
+				    slider:SetScript("OnEnter", function(self)
+				        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+				        GameTooltip:SetText(currentItem.tooltip)
+				        GameTooltip:Show()
+				    end)
+				
+				    slider:SetScript("OnLeave", function()
+				        GameTooltip:Hide()
+				    end)
+				end
+				
 				slider:SetScript("OnValueChanged", function(self)
 
 					local value = SnapToStep(self:GetValue())
@@ -1339,6 +1355,7 @@ end
 ----------------------------------------------------------------------------------------------------------------------
 -- CHANGELOG
 ----------------------------------------------------------------------------------------------------------------------
+-- Pumpan: added the possibility to add tooltip to the sliders (20260317)
 --
 -- Nymz: ButtonSettingsReorder (20260317)
 --   - Moved "Enable Refill Button" to below "Enable Others button" so both enable/disable
