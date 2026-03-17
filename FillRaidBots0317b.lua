@@ -5183,9 +5183,9 @@ function RepositionButtonsFromOffset()
     local pcpPhysX = pcp:GetLeft() * pcp:GetEffectiveScale()
     local pcpPhysY = pcp:GetTop()  * pcp:GetEffectiveScale()
 
-    -- Placering beroende på mode
+    -- Placering beroende pÃ¥ mode
     if FillRaidBotsSavedSettings.moveButtonsRelative then
-        -- Relative mode: exakt offset från PCP
+        -- Relative mode: exakt offset frÃ¥n PCP
         if not savedPosition or not savedPosition.offsetX then return end
         openFillRaidButton:ClearAllPoints()
         openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT",
@@ -5198,7 +5198,7 @@ function RepositionButtonsFromOffset()
         openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT",
             savedPosition.absX / uiScale, savedPosition.absY / uiScale)
     else
-        -- Fixed mode: knappen är barn till PCP, här kan horisontell layout centreras
+        -- Fixed mode: knappen Ã¤r barn till PCP, hÃ¤r kan horisontell layout centreras
         if layout == "horizontal" then
             local w1, w2, w3 = openFillRaidButton:GetWidth(), kickAllButton:GetWidth(), reFillButton:GetWidth()
             local totalWidth = w1 + w2 + w3 + (spacing * 2)
@@ -5457,7 +5457,7 @@ function FillRaidBots_ResetButtonPositions()
     --Nymz: ButtonSize (20260316) Reparent all three buttons to UIParent before resizing.
     -- They may be on different parent frames (PCPFrame vs PCPFrameRemake) with different
     -- effective scales, causing SetWidth/SetHeight to produce visually different sizes.
-    -- UIParent is always scale 1.0 and the same for all three — sizing them there
+    -- UIParent is always scale 1.0 and the same for all three Â— sizing them there
     -- guarantees consistent visual output. They are reparented back afterwards via
     -- InitializeButtonPosition and ToggleButtonMovement.
     if FRB_openFillRaidButton then FRB_openFillRaidButton:SetParent(UIParent) end
