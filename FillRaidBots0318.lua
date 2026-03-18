@@ -1662,6 +1662,13 @@ function FillRaid_OnLoad(self, event, ...)
 end
 
 
+-- Pumpan:(20260318) 
+-- Detects when the player becomes group/raid leader and applies the saved loot method.
+-- It only triggers on a leader state change, skips if the loot method is already correct, 
+-- This is more efficient and maintainable than the original approach, which ran on every roster update.
+--========================
+-- Helper: Determine which loot method to apply
+--========================
 local function GetSelectedLootMethod()
     if FillRaidBotsSavedSettings.isFFAEnabled then
         return "freeforall"
@@ -1672,40 +1679,27 @@ local function GetSelectedLootMethod()
     end
 end
 
+--========================
+-- Loot Logic
+--========================
+local function ApplySavedLootMethod()
+    if not isLootTypeEnabled then return end
+    if not UnitIsGroupLeader("player") then return end
 
---==================================================
--- Apply loot method with delay (WoW 1.14+)
---==================================================
-local function ApplySavedLootMethodDelayed()
-	if not isLootTypeEnabled then return end
-    
-    C_Timer.After(0.3, function()
-        
-        if not (UnitIsGroupLeader("player")) then
-            return
+    local selectedMethod = GetSelectedLootMethod()
+    if not selectedMethod then return end  -- nothing enabled
+
+    local currentMethod = GetLootMethod()
+
+    if currentMethod ~= selectedMethod then
+        if selectedMethod == "master" then
+            SetLootMethod("master", UnitName("player"))
+            DEFAULT_CHAT_FRAME:AddMessage("Loot set to Master Loot")
+        else
+            SetLootMethod(selectedMethod)
+            DEFAULT_CHAT_FRAME:AddMessage("Loot set to " .. (selectedMethod == "group" and "Group Loot" or "FFA"))
         end
-
-        local currentMethod, currentMaster = GetLootMethod()
-
-        if FillRaidBotsSavedSettings.isMasterLootEnabled then
-            if currentMethod ~= "master" then
-                SetLootMethod("master", UnitName("player"))
-                DEFAULT_CHAT_FRAME:AddMessage("Loot set to Master Loot")
-            end
-
-        elseif FillRaidBotsSavedSettings.isGroupLootEnabled then
-            if currentMethod ~= "group" then
-                SetLootMethod("group")
-                DEFAULT_CHAT_FRAME:AddMessage("Loot set to Group Loot")
-            end
-
-        elseif FillRaidBotsSavedSettings.isFFAEnabled then
-            if currentMethod ~= "freeforall" then
-                SetLootMethod("freeforall")
-                DEFAULT_CHAT_FRAME:AddMessage("Loot set to FFA")
-            end
-        end
-    end)
+    end
 end
 
 --==================================================
@@ -1718,9 +1712,8 @@ resetBotFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 resetBotFrame:SetScript("OnEvent", function(self, event, arg1)
     
     resetfirstbot_OnEvent()
-
-    
-    ApplySavedLootMethodDelayed()
+  
+    ApplySavedLootMethod()
 end)
 
 local originalSFXVolume = nil
@@ -1816,30 +1809,30 @@ local function FillRaid()
 			
 			end				
 
-            
-            local waitForPartyFrame = CreateFrame("Frame")
-            waitForPartyFrame:SetScript("OnUpdate", function()
-                if GetNumGroupMembers() > 0 then
-                    waitForPartyFrame:SetScript("OnUpdate", nil)
-                    waitForPartyFrame:Hide()
-                    SavePartyMembersAndSetFirstBot()
-                    local selectedLoot = GetSelectedLootMethod()
-                    if selectedLoot == "master" then
+-- Pumpan:(20260318) in function fillraid(): Removed waitForPartyFrame this is now redundant thanks to ApplySavedLootMethod()        
+--            local waitForPartyFrame = CreateFrame("Frame")
+--            waitForPartyFrame:SetScript("OnUpdate", function()
+--                if GetNumGroupMembers() > 0 then
+--                    waitForPartyFrame:SetScript("OnUpdate", nil)
+--                    waitForPartyFrame:Hide()
+--                    SavePartyMembersAndSetFirstBot()
+--                    local selectedLoot = GetSelectedLootMethod()
+--                    if selectedLoot == "master" then
                        
-                        local playerName = UnitName("player")
-                        SetLootMethod("master", playerName)
-                        QueueDebugMessage("Loot method set to Master Looter. Assigned to: " .. playerName, "debuginfo")
-                    else
-                        SetLootMethod(selectedLoot)
-                        QueueDebugMessage("Loot method set to: " .. selectedLoot, "debuginfo")
-                    end
-					if totaly > 5 then
-                    FillRaid() 
-					end
-                end
-            end)
-            waitForPartyFrame:Show()
-            return
+--                        local playerName = UnitName("player")
+--                        SetLootMethod("master", playerName)
+--                        QueueDebugMessage("Loot method set to Master Looter. Assigned to: " .. playerName, "debuginfo")
+--                   else
+--                        SetLootMethod(selectedLoot)
+--                        QueueDebugMessage("Loot method set to: " .. selectedLoot, "debuginfo")
+--                    end
+--					if totaly > 5 then
+--                    FillRaid() 
+--					end
+--                end
+--            end)
+--            waitForPartyFrame:Show()
+--            return
         end
 
         
@@ -5960,6 +5953,17 @@ end
 ----------------------------------------------------------------------------------------------------------------------
 -- CHANGELOG
 ----------------------------------------------------------------------------------------------------------------------
+--
+-- Pumpan (20260318) ApplySavedLootMethod()
+-- Fixes:
+--   - Loot type no longer resets immediately if changed manually.
+--   - Prevents spam in battlegrounds or other temporary groups.
+--   - Detects when the player becomes group/raid leader and applies the saved loot method.
+--   - Only triggers on a leader state change and skips if the loot method is already correct.
+--   - More efficient and maintainable than the original approach, which ran on every roster update.
+--
+-- Pumpan:(20260318) in function fillraid()
+--  --Removed waitForPartyFrame this is now redundant thanks to ApplySavedLootMethod()
 --
 -- Nymz: (20260318) ButtonPct
 --   - ButtonSize now stored as % instead of pixels (100% = theme default size).
