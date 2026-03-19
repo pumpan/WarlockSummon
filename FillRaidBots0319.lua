@@ -2398,7 +2398,30 @@ function CreateFillRaidUI()
     local yOffset = -30
     local xOffset = 10
     local totalBots = 0 
-
+	--========================
+	-- Pumpan:(20260319) Get zone and Set max bots depending on which zone
+	--========================
+	local function GetMaxBotsForCurrentZone()
+	    local zone = GetRealZoneText()
+	
+	    if zone == "Zul'Gurub" or zone == "Ruins of Ahn'Qiraj" then
+	        return 19
+	    end
+	
+	    return 39
+	end
+	
+	local function UpdateSpotsLeft()
+	    local maxBots = GetMaxBotsForCurrentZone()
+	
+	    if totalBots < (maxBots + 1) then
+	        totalBotLabel:SetText("Total Bots: " .. totalBots)
+	        spotsLeftLabel:SetText("Spots Left: " .. math.max(0, maxBots - totalBots))
+	    else
+	        totalBotLabel:SetText("Too many added: |cffff0000" .. totalBots .. "|r")
+	        spotsLeftLabel:SetText("Spots Left: 0")
+	    end
+	end
     
     local totalBotLabel = FillRaidFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
     totalBotLabel:SetPoint("TOP", FillRaidFrame, "TOP", 0, yOffset)
@@ -2408,7 +2431,7 @@ function CreateFillRaidUI()
     
     local spotsLeftLabel = FillRaidFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
     spotsLeftLabel:SetPoint("TOP", FillRaidFrame, "TOP", 0, yOffset)
-    spotsLeftLabel:SetText("Spots Left: 39") 
+	spotsLeftLabel:SetText("Spots Left: " .. GetMaxBotsForCurrentZone()) -- Pumpan:(20260319) get max bots for the zone
     yOffset = yOffset - 25
 
     
@@ -2557,13 +2580,7 @@ function CreateFillRaidUI()
                         totalBots = totalBots + count
                     end
 
-                    if totalBots < 40 then
-                        totalBotLabel:SetText("Total Bots: " .. totalBots)
-                        spotsLeftLabel:SetText("Spots Left: " .. (39 - totalBots))
-                    else
-                        totalBotLabel:SetText("Too many added: |cffff0000" .. totalBots .. "|r")
-                        spotsLeftLabel:SetText("Spots Left: 0")
-                    end
+					
 
                     roleCountsLabel:SetText(string.format(
                         "Tanks: %d Healers: %d Melee DPS: %d Ranged DPS: %d",
@@ -2607,7 +2624,21 @@ function CreateFillRaidUI()
 		  FillRaidFrame:Hide()
 		  fillRaidFrameManualClose = true 
 	  end)
-	  
+
+	-- =========================
+	-- -- Pumpan:(20260319) Zone update, get max bots for the zone
+	-- =========================
+	if not FillRaidBotsZoneFrame then
+	    FillRaidBotsZoneFrame = CreateFrame("Frame")
+	    FillRaidBotsZoneFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+	    FillRaidBotsZoneFrame:RegisterEvent("ZONE_CHANGED")
+	    FillRaidBotsZoneFrame:RegisterEvent("ZONE_CHANGED_INDOORS")
+	
+	    FillRaidBotsZoneFrame:SetScript("OnEvent", function()
+	        UpdateSpotsLeft()
+	    end)
+	end
+	
 	local UISettingsFrame = CreateFrame("Frame", "UISettingsFrame", UIParent)
 	UISettingsFrame:SetWidth(200)
 	UISettingsFrame:SetHeight(380)
@@ -4704,12 +4735,11 @@ end
 			end
 		end
 
-		
-		totalBotLabel:SetText("Total Bots: 0")
-		spotsLeftLabel:SetText("Spots Left: 39")
-		roleCountsLabel:SetText("Tanks: 0 Healers: 0 Melee DPS: 0 Ranged DPS: 0")
-	end)
+		totalBots = 0
+		UpdateSpotsLeft() -- Pumpan:(20260319) update reset for the zone
+		roleCountsLabel:SetText("Tanks: 0 Healers: 0 Melee DPS: 0 Ranged DPS: 0")			
 
+	end)
 
 
 	  
@@ -5994,6 +6024,9 @@ end
 ----------------------------------------------------------------------------------------------------------------------
 -- CHANGELOG
 ----------------------------------------------------------------------------------------------------------------------
+-- Pumpan: (20260319) Implemented dynamic raid size based on current zone.
+-- Replaced hardcoded 39 with GetMaxBotsForCurrentZone() (ZG/AQ20 = 19).
+-- Added UpdateSpotsLeft() helper and hooked ZONE_CHANGED events to auto-update UI without reload.
 --
 -- Pumpan: (20260318) InitializeButtonPosition() - commented out "Nymz: (20260318) ButtonHorizontal" fix because I think
 -- my fix in ToggleButtonMovement() makes this redundant. Sorry Nymz! <8
