@@ -1529,95 +1529,67 @@ end)
 
 
 
+-- Pumpan:(20260324)
+-- Starter-bot detection now only accepts actual bot names.
+-- This avoids selecting a real player as firstBotName when filling with other players.
+local function IsBotName(name)
+    return name and string.find(name, "%*") ~= nil
+end
+
 function SaveRaidMembersAndSetFirstBot()
-    local raidMembers = {}
     local playerName = UnitName("player")
-    firstBotName = nil  
-
-    local guildMembers = {}
-    for i = 1, GetNumGuildMembers() do
-        local name, _, _, _, _, _, _, _, online = GetGuildRosterInfo(i)
-        if name and online then
-            local normalizedGuildName = name:match("([^%-]+)"):lower() 
-            guildMembers[normalizedGuildName] = true
-        end
-    end
-
-    local friends = {}
-    local numFriends = C_FriendList.GetNumFriends()
-    for i = 1, numFriends do
-        local friendInfo = C_FriendList.GetFriendInfoByIndex(i)
-        if friendInfo and friendInfo.name and friendInfo.connected then
-            local normalizedFriendName = friendInfo.name:match("([^%-]+)"):lower() 
-            friends[normalizedFriendName] = true
-        end
-    end
+    firstBotName = nil
 
     local numRaidMembers = GetNumRaidMembers and GetNumRaidMembers() or GetNumGroupMembers()
     for i = 1, numRaidMembers do
         local unit = IsInRaid() and "raid" .. i or "party" .. i
         local name = UnitName(unit)
 
-       
-        if name and name ~= playerName then
-            table.insert(raidMembers, name)
-
-            local normalizedName = name:match("([^%-]+)"):lower()
-
-            if not firstBotName and not guildMembers[normalizedName] and not friends[normalizedName] then
-                firstBotName = name
-            end
+        if name and name ~= playerName and IsBotName(name) then
+            firstBotName = name
+            break
         end
     end
 
     if firstBotName then
         QueueDebugMessage("INFO: First bot in raid set to: " .. firstBotName, "debuginfo")
     else
-        QueueDebugMessage("WARNING: No eligible bot found to set as the first bot in raid.", "debuginfo")
+        QueueDebugMessage("WARNING: No bot found in raid to set as first bot.", "debuginfo")
     end
 end
 
 
-
-
 local function SavePartyMembersAndSetFirstBot()
-    local partyMembers = {}
-    local isInRaid = IsInRaid()  
+    local playerName = UnitName("player")
+    firstBotName = nil
 
-    
-    if isInRaid then
+    if IsInRaid() then
         QueueDebugMessage("In a raid group.", "debuginfo")
         for i = 1, GetNumGroupMembers() do
-            local unit = "raid" .. i
-            local name = UnitName(unit)
+            local name = UnitName("raid" .. i)
             if name then
-                table.insert(partyMembers, name)
                 QueueDebugMessage("Found raid member: " .. name, "debuginfo")
             else
                 QueueDebugMessage("No name found for raid unit " .. i, "debuginfo")
             end
+
+            if name and name ~= playerName and IsBotName(name) then
+                firstBotName = name
+                break
+            end
         end
     else
         QueueDebugMessage("In a party group.", "debuginfo")
-        for i = 1, GetNumGroupMembers() - 1 do  
-            local unit = "party" .. i
-            local name = UnitName(unit)
-            if name then
-                table.insert(partyMembers, name)
-            else
+        for i = 1, GetNumGroupMembers() - 1 do
+            local name = UnitName("party" .. i)
+            if not name then
                 QueueDebugMessage("No name found for party unit " .. i, "debuginfo")
             end
-        end
-    end
 
-    
-    local playerName = UnitName("player")
-    QueueDebugMessage("Player name is: " .. playerName, "debuginfo")
-
-    for _, member in ipairs(partyMembers) do
-        if member ~= playerName then
-            firstBotName = member
-            break
+            if name and name ~= playerName and IsBotName(name) then
+                firstBotName = name
+                break
+            end
         end
     end
 
@@ -1803,12 +1775,18 @@ end
 
 local FillRaid
 
+-- Pumpan:(20260324)
+-- Check raid or party for an existing bot starter, but never treat a real player as the starter bot.
 local function EnsureFirstBotFromCurrentGroup()
     if firstBotName then
         return true
     end
 
-    SavePartyMembersAndSetFirstBot()
+    if IsInRaid() then
+        SaveRaidMembersAndSetFirstBot()
+    else
+        SavePartyMembersAndSetFirstBot()
+    end
 
     if firstBotName then
         QueueDebugMessage("Using existing bot as starter bot: " .. firstBotName, "debugfilling")
@@ -1847,14 +1825,38 @@ local function QueueRemainingBots(healers, others, totalExpected)
     end
 end
 
--- Pumpan:(20260321)
--- Added staged starter-bot sequence for >5 bot fills.
--- It now supports starting from solo, existing party, or existing raid by:
--- 1) finding or inviting a starter bot
--- 2) converting to raid when needed
--- 3) adding the first preset replacement bot
--- 4) removing the old starter bot only after the replacement has joined
--- 5) resuming the normal FillRaid flow
+-- Pumpan:(20260324)
+-- Only use starter-bot swap logic when we already have a bot to replace,
+-- or when filling solo into a larger raid where a temporary starter bot is needed.
+-- If grouped only with real players, skip starter logic and fill normally.
+local function GroupHasAnyBot()
+    local playerName = UnitName("player")
+
+    if IsInRaid() then
+        local numMembers = GetNumRaidMembers and GetNumRaidMembers() or GetNumGroupMembers()
+        for i = 1, numMembers do
+            local name = UnitName("raid" .. i)
+            if name and name ~= playerName and IsBotName(name) then
+                return true
+            end
+        end
+    else
+        local numMembers = GetNumGroupMembers() - 1
+        for i = 1, numMembers do
+            local name = UnitName("party" .. i)
+            if name and name ~= playerName and IsBotName(name) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+-- Pumpan:(20260324)
+-- Starter sequence now only runs for actual starter-swap cases.
+-- Solo large fills still create a temporary starter bot, but groups with only real players
+-- skip this path and let the first normal invited bot join naturally.
 local function StartStarterBotSequence(healers, others)
     if starterSequenceRunning then
         return
@@ -1873,9 +1875,8 @@ local function StartStarterBotSequence(healers, others)
 
     starterFrame:SetScript("OnUpdate", function()
         -- stage 1:
-        -- solo: invite a temporary bot and save it
-        -- party: use existing bot as starter bot
-        -- raid: use existing raid bot as starter bot
+        -- solo large fill: invite a temporary starter bot and save it
+        -- party/raid with existing bot: use that bot as starter bot
         if stage == 1 then
             if IsInRaid() then
                 if not firstBotName then
@@ -1886,11 +1887,10 @@ local function StartStarterBotSequence(healers, others)
                     QueueDebugMessage("Using existing raid bot as starter bot: " .. firstBotName, "debugfilling")
                     stage = 3
                 else
-                    QueueDebugMessage("Could not find an existing raid bot to use as starter bot.", "debugerror")
-                    starterSequenceRunning = false
+                    QueueDebugMessage("Starter sequence aborted: no existing raid bot found to replace.", "debugerror")
+                    ResetStarterSequenceState()
                     starterFrame:SetScript("OnUpdate", nil)
                     starterFrame:Hide()
-                    return
                 end
 
             elseif GetNumGroupMembers() == 0 then
@@ -1917,11 +1917,10 @@ local function StartStarterBotSequence(healers, others)
                     QueueDebugMessage("Using existing party bot as starter bot: " .. firstBotName, "debugfilling")
                     stage = 2
                 else
-                    QueueDebugMessage("Could not find an existing party bot to use as starter bot.", "debugerror")
-                    starterSequenceRunning = false
+                    QueueDebugMessage("Starter sequence aborted: no existing party bot found to replace.", "debugerror")
+                    ResetStarterSequenceState()
                     starterFrame:SetScript("OnUpdate", nil)
                     starterFrame:Hide()
-                    return
                 end
             end
 
@@ -1951,7 +1950,7 @@ local function StartStarterBotSequence(healers, others)
                         stage = 4
                     else
                         QueueDebugMessage("No preset bot available for starter sequence.", "debugfilling")
-                        starterSequenceRunning = false
+                        ResetStarterSequenceState()
                         starterFrame:SetScript("OnUpdate", nil)
                         starterFrame:Hide()
                     end
@@ -2040,14 +2039,33 @@ function FillRaid(skipStarterSequence, existingHealers, existingOthers, existing
     end
 
 	if IsInRaid() then
-		if not starterSwapDone and not firstBotName and totaly > 0 then
+		if not starterSwapDone and totaly > 0 and GroupHasAnyBot() then
+			if not firstBotName then
+				SaveRaidMembersAndSetFirstBot()
+			end
 			StartStarterBotSequence(healers, others)
 			return
 		end
 	else
 		if totaly > 5 then
-			StartStarterBotSequence(healers, others)
-			return
+			if GetNumGroupMembers() == 0 then
+				StartStarterBotSequence(healers, others)
+				return
+			elseif GroupHasAnyBot() then
+				if not firstBotName then
+					SavePartyMembersAndSetFirstBot()
+				end
+				StartStarterBotSequence(healers, others)
+				return
+			else
+				ConvertToRaid()
+				QueueDebugMessage("Converted to raid with real players only. No starter bot needed.", "debugfilling")
+				QueueRemainingBots(healers, others, totaly)
+				C_Timer.After(3, function()
+					ToggleSoundEffectsVolume("restore")
+				end)
+				return
+			end
 		end
 
 		if GetNumGroupMembers() == 0 then
