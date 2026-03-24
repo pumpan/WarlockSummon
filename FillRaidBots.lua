@@ -2047,7 +2047,12 @@ function FillRaid(skipStarterSequence, existingHealers, existingOthers, existing
 			return
 		end
 	else
-		if totaly > 5 then
+ -- Pumpan:(20260304) added group size including players in the group and decide if we should convert to raid or not		
+
+		local currentMembers = GetNumGroupMembers() + 1
+		local targetGroupSize = currentMembers + totaly
+		
+		if targetGroupSize > 5 then
 			if GetNumGroupMembers() == 0 then
 				StartStarterBotSequence(healers, others)
 				return
