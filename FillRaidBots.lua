@@ -6617,6 +6617,13 @@ end
 ----------------------------------------------------------------------------------------------------------------------
 -- CHANGELOG
 ----------------------------------------------------------------------------------------------------------------------
+--
+-- Pumpan:(20260324) Fixed starter bot logic + raid size check.
+-- No longer requires bot when grouped with real players.
+-- Added GroupHasAnyBot() and correct raid detection.
+--
+-- Pumpan:(20260323) Improved refill logic. Fixed underfilling and loop issues.
+--
 -- Pumpan:(20260321)
 -- Added starter sequence state flags: starterSequenceRunning, continueFillAfterStarter, starterSwapDone.
 -- Added ResetStarterSequenceState() to fully clear starter/fill state when the group is emptied.
