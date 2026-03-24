@@ -35,6 +35,9 @@ local classCounts = {}
 local FillRaidFrame 
 local fillRaidFrameManualClose = false 
 local isCheckAndRemoveEnabled = false
+local starterSequenceRunning = false
+local continueFillAfterStarter = false
+
 
 if FillRaidBotsSavedSettings == nil then
     FillRaidBotsSavedSettings = {}
@@ -294,7 +297,7 @@ end
 
 
 local RoleDetector = CreateFrame("Frame")
---Nymz RoleDetection: REMOVED RoleDetector:RegisterEvent("UNIT_AURA") -- replaced by GROUP_ROSTER_UPDATE + debounce
+--Nymz: RoleDetection REMOVED RoleDetector:RegisterEvent("UNIT_AURA") -- replaced by GROUP_ROSTER_UPDATE + debounce
 RoleDetector:RegisterEvent("PLAYER_ENTERING_WORLD") 
 RoleDetector:RegisterEvent("GROUP_ROSTER_UPDATE") 
 RoleDetector:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
@@ -649,7 +652,7 @@ end
 
 
 local warriorDetectionCount = {}
---Nymz RoleDetection: MODIFIED CheckRaidAuras() - warrior DPS detection threshold lowered from 10 to 2.
+--Nymz: RoleDetection MODIFIED CheckRaidAuras() - warrior DPS detection threshold lowered from 10 to 2.
 -- With the debounce system this function only fires ~2 times per spawn cycle,
 local function CheckRaidAuras()
     local playerName = UnitName("player")  
@@ -695,7 +698,7 @@ local function CheckRaidAuras()
                     warriorDetectionCount[unitName] = warriorDetectionCount[unitName] + 1  
                 end
 
-                --Nymz RoleDetection: MODIFIED threshold lowered from 10 to 2 because CheckRaidAuras now only fires
+                --Nymz: RoleDetection MODIFIED threshold lowered from 10 to 2 because CheckRaidAuras now only fires
                 -- a couple of times per spawn cycle (debounce system). 10 was calibrated for
                 -- UNIT_AURA which fired hundreds of times per session.
                 if warriorDetectionCount[unitName] >= 2 then
@@ -710,7 +713,7 @@ end
 
 
 
---Nymz RoleDetection: ADDED debounce system for CheckRaidAuras.
+--Nymz: RoleDetection ADDED debounce system for CheckRaidAuras.
 -- Originally CheckRaidAuras was called on every UNIT_AURA event, which fired 200-300+
 -- times per raid spawn. This collapses all those calls into at most 2:
 --   - First call: 1s after the last GROUP_ROSTER_UPDATE (bots done joining)
@@ -760,7 +763,7 @@ end
 
 
 
---Nymz RoleDetection: MODIFIED replaced UNIT_AURA with GROUP_ROSTER_UPDATE + ScheduleCheckRaidAuras() debounce
+--Nymz: RoleDetection MODIFIED replaced UNIT_AURA with GROUP_ROSTER_UPDATE + ScheduleCheckRaidAuras() debounce
 RoleDetector:SetScript("OnEvent", function(self, event, ...)
     if event == "GROUP_ROSTER_UPDATE" then
         ScheduleCheckRaidAuras()
@@ -818,7 +821,15 @@ end
 
 
 UpdateGroupMembers()
-
+local ResetRefillLoopState
+local FinishRefillLoop
+local ScheduleRefillRecheck
+local RecheckRefillState
+local RunRefillPass
+local refillLoopRunning = false
+local refillRecheckPending = false
+local PendingRefill = {}
+local refillFinalCheckPending = false
 
 RoleRemoverFrame:SetScript("OnEvent", function()
     
@@ -828,10 +839,15 @@ RoleRemoverFrame:SetScript("OnEvent", function()
     UpdateGroupMembers()
     UpdateReFillButtonVisibility() 
 
+    if refillLoopRunning and not refillRecheckPending then
+        ScheduleRefillRecheck(0.2)
+    end
+
     
     local isInGroup = GetNumGroupMembers() > 0
     if wasInGroup and not isInGroup then
         ReplaceDeadBot = {}
+        ResetRefillLoopState()
         UpdateReFillButtonVisibility()
         resetData() 
         QueueDebugMessage("Cleared both lists", "debugdetection")
@@ -1041,16 +1057,21 @@ end
 local firstBotRemovalFrame = CreateFrame("Frame")
 firstBotRemovalFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 
+-- Pumpan:(20260321)
+-- Guard first-bot auto removal while the staged starter swap is running.
+-- This prevents the normal roster-update remover from interfering with the new
+-- starter sequence for party/raid fills above 5 bots.
 firstBotRemovalFrame:SetScript("OnEvent", function()
-    if not initialBotRemoved and GetNumGroupMembers() >= 3 then
-    
-        if firstBotName then
-            QueueDebugMessage("Removed first bot: " .. firstBotName, "debuginfo")
-			if totaly > 5 then 
-            UninviteMember(firstBotName, "firstBotRemoved")
-			end
-        end
+    if starterSequenceRunning then
+        return
+    end
 
+    if not initialBotRemoved and GetNumGroupMembers() >= 3 then
+        if firstBotName and totaly > 5 then
+            initialBotRemoved = true
+            QueueDebugMessage("Removed first bot: " .. firstBotName, "debuginfo")
+            UninviteMember(firstBotName, "firstBotRemoved")
+        end
     end
 end)
 
@@ -1610,13 +1631,22 @@ end
 
 
 
+-- Pumpan:(20260321)
+-- Added a shared reset helper for all starter-sequence state so leave group / kick all
+-- returns FillRaid to a clean state before the next fill attempt.
+local function ResetStarterSequenceState()
+    starterSequenceRunning = false
+    continueFillAfterStarter = false
+    starterSwapDone = false
+    initialBotRemoved = false
+    firstBotName = nil
+    botCount = 0
+end
+
 function resetfirstbot_OnEvent(self, event)
     if event == "RAID_ROSTER_UPDATE" or event == "GROUP_ROSTER_UPDATE" then
-        
         if GetNumGroupMembers() == 0 then
-            initialBotRemoved = false
-            firstBotName = nil
-            botCount = 0
+            ResetStarterSequenceState()
             QueueDebugMessage("Bot state reset: No members in party or raid.", "debuginfo")
         end
     end
@@ -1662,6 +1692,13 @@ function FillRaid_OnLoad(self, event, ...)
 end
 
 
+-- Pumpan:(20260318) 
+-- Detects when the player becomes group/raid leader and applies the saved loot method.
+-- It only triggers on a leader state change, skips if the loot method is already correct, 
+-- This is more efficient and maintainable than the original approach, which ran on every roster update.
+--========================
+-- Helper: Determine which loot method to apply
+--========================
 local function GetSelectedLootMethod()
     if FillRaidBotsSavedSettings.isFFAEnabled then
         return "freeforall"
@@ -1672,55 +1709,48 @@ local function GetSelectedLootMethod()
     end
 end
 
+--========================
+-- Loot Logic
+--========================
+local hasAppliedLoot = false
 
---==================================================
--- Apply loot method with delay (WoW 1.14+)
---==================================================
-local function ApplySavedLootMethodDelayed()
-	if not isLootTypeEnabled then return end
-    
-    C_Timer.After(0.3, function()
-        
-        if not (UnitIsGroupLeader("player")) then
-            return
+local function ApplySavedLootMethod()
+    if not isLootTypeEnabled then return end
+    if not UnitIsGroupLeader("player") then return end
+    if hasAppliedLoot then return end
+
+    local selectedMethod = GetSelectedLootMethod()
+    if not selectedMethod then return end
+
+    local currentMethod = GetLootMethod()
+
+    if currentMethod ~= selectedMethod then
+        if selectedMethod == "master" then
+            SetLootMethod("master", UnitName("player"))
+            DEFAULT_CHAT_FRAME:AddMessage("Loot set to Master Loot")
+        else
+            SetLootMethod(selectedMethod)
+            DEFAULT_CHAT_FRAME:AddMessage("Loot set to " .. (selectedMethod == "group" and "Group Loot" or "FFA"))
         end
+    end
 
-        local currentMethod, currentMaster = GetLootMethod()
-
-        if FillRaidBotsSavedSettings.isMasterLootEnabled then
-            if currentMethod ~= "master" then
-                SetLootMethod("master", UnitName("player"))
-                DEFAULT_CHAT_FRAME:AddMessage("Loot set to Master Loot")
-            end
-
-        elseif FillRaidBotsSavedSettings.isGroupLootEnabled then
-            if currentMethod ~= "group" then
-                SetLootMethod("group")
-                DEFAULT_CHAT_FRAME:AddMessage("Loot set to Group Loot")
-            end
-
-        elseif FillRaidBotsSavedSettings.isFFAEnabled then
-            if currentMethod ~= "freeforall" then
-                SetLootMethod("freeforall")
-                DEFAULT_CHAT_FRAME:AddMessage("Loot set to FFA")
-            end
-        end
-    end)
+    hasAppliedLoot = true
 end
 
 --==================================================
 -- Event-frame
 --==================================================
-local resetBotFrame = CreateFrame("Frame")
-resetBotFrame:RegisterEvent("RAID_ROSTER_UPDATE")
-resetBotFrame:RegisterEvent("GROUP_ROSTER_UPDATE") 
-
 resetBotFrame:SetScript("OnEvent", function(self, event, arg1)
-    
-    resetfirstbot_OnEvent()
 
-    
-    ApplySavedLootMethodDelayed()
+    resetfirstbot_OnEvent(self, event)
+
+    if UnitIsGroupLeader("player") then
+        if not hasAppliedLoot then
+            ApplySavedLootMethod()
+        end
+    else
+        hasAppliedLoot = false
+    end
 end)
 
 local originalSFXVolume = nil
@@ -1758,106 +1788,285 @@ local moveQueue = {}
 local healerClasses = {"PALADIN", "PRIEST", "DRUID", "SHAMAN"} 
 local currentPhase = 1
 local FixGroups
+local starterSwapDone = false
+local function TakeNextPresetBot(healers, others)
+    if table.getn(healers) > 0 then
+        return table.remove(healers, 1)
+    end
+
+    if table.getn(others) > 0 then
+        return table.remove(others, 1)
+    end
+
+    return nil
+end
+
+local FillRaid
+
+local function EnsureFirstBotFromCurrentGroup()
+    if firstBotName then
+        return true
+    end
+
+    SavePartyMembersAndSetFirstBot()
+
+    if firstBotName then
+        QueueDebugMessage("Using existing bot as starter bot: " .. firstBotName, "debugfilling")
+        return true
+    end
+
+    QueueDebugMessage("Could not find an existing bot to use as starter bot.", "debugerror")
+    return false
+end
+
+local function TakeNextPresetBot(healers, others)
+    if table.getn(healers) > 0 then
+        return table.remove(healers, 1)
+    end
+
+    if table.getn(others) > 0 then
+        return table.remove(others, 1)
+    end
+
+    return nil
+end
+
+local function QueueRemainingBots(healers, others, totalExpected)
+    QueueDebugMessage("Adding: Going to add healers:" .. table.getn(healers), "debugfilling")
+    QueueDebugMessage("Adding: Going to add classes:" .. table.getn(others), "debugfilling")
+    QueueDebugMessage("Adding: Totaly:" .. totalExpected, "debugfilling")
+
+    for _, healer in ipairs(healers) do
+        QueueMessage(".partybot add " .. string.lower(healer), "SAY", true)
+        QueueDebugMessage("Added " .. healer, "debugfilling")
+    end
+
+    for _, other in ipairs(others) do
+        QueueMessage(".partybot add " .. string.lower(other), "SAY", true)
+        QueueDebugMessage("Added " .. other, "debugfilling")
+    end
+end
+
+-- Pumpan:(20260321)
+-- Added staged starter-bot sequence for >5 bot fills.
+-- It now supports starting from solo, existing party, or existing raid by:
+-- 1) finding or inviting a starter bot
+-- 2) converting to raid when needed
+-- 3) adding the first preset replacement bot
+-- 4) removing the old starter bot only after the replacement has joined
+-- 5) resuming the normal FillRaid flow
+local function StartStarterBotSequence(healers, others)
+    if starterSequenceRunning then
+        return
+    end
+
+    starterSequenceRunning = true
+    continueFillAfterStarter = false
+    initialBotRemoved = false
+
+    local starterFrame = CreateFrame("Frame")
+    local stage = 1
+    local secondBotAdded = false
+    local invitedStarterBot = false
+    local replacementBot = nil
+    local stage3StartMembers = 0
+
+    starterFrame:SetScript("OnUpdate", function()
+        -- stage 1:
+        -- solo: invite a temporary bot and save it
+        -- party: use existing bot as starter bot
+        -- raid: use existing raid bot as starter bot
+        if stage == 1 then
+            if IsInRaid() then
+                if not firstBotName then
+                    SaveRaidMembersAndSetFirstBot()
+                end
+
+                if firstBotName then
+                    QueueDebugMessage("Using existing raid bot as starter bot: " .. firstBotName, "debugfilling")
+                    stage = 3
+                else
+                    QueueDebugMessage("Could not find an existing raid bot to use as starter bot.", "debugerror")
+                    starterSequenceRunning = false
+                    starterFrame:SetScript("OnUpdate", nil)
+                    starterFrame:Hide()
+                    return
+                end
+
+            elseif GetNumGroupMembers() == 0 then
+                if not invitedStarterBot then
+                    QueueMessage(".partybot add warrior tank", "SAY", true)
+                    QueueDebugMessage("Inviting the first bot to start the party for a raid.", "none")
+                    invitedStarterBot = true
+                end
+
+                if GetNumGroupMembers() > 0 then
+                    SavePartyMembersAndSetFirstBot()
+                    if firstBotName then
+                        QueueDebugMessage("Starter bot joined. Saved first bot.", "debugfilling")
+                        stage = 2
+                    end
+                end
+
+            else
+                if not firstBotName then
+                    SavePartyMembersAndSetFirstBot()
+                end
+
+                if firstBotName then
+                    QueueDebugMessage("Using existing party bot as starter bot: " .. firstBotName, "debugfilling")
+                    stage = 2
+                else
+                    QueueDebugMessage("Could not find an existing party bot to use as starter bot.", "debugerror")
+                    starterSequenceRunning = false
+                    starterFrame:SetScript("OnUpdate", nil)
+                    starterFrame:Hide()
+                    return
+                end
+            end
+
+        -- stage 2: convert party to raid
+        elseif stage == 2 then
+            if not IsInRaid() then
+                if GetNumGroupMembers() >= 2 then
+                    ConvertToRaid()
+                    QueueDebugMessage("Converted to raid.", "debugfilling")
+                    stage = 3
+                end
+            else
+                stage = 3
+            end
+
+        -- stage 3: add first preset bot that will replace starter bot
+        elseif stage == 3 then
+            if IsInRaid() then
+                if not secondBotAdded then
+                    replacementBot = TakeNextPresetBot(healers, others)
+
+                    if replacementBot then
+                        stage3StartMembers = GetNumGroupMembers()
+                        QueueMessage(".partybot add " .. string.lower(replacementBot), "SAY", true)
+                        QueueDebugMessage("Added replacement bot: " .. replacementBot, "debugfilling")
+                        secondBotAdded = true
+                        stage = 4
+                    else
+                        QueueDebugMessage("No preset bot available for starter sequence.", "debugfilling")
+                        starterSequenceRunning = false
+                        starterFrame:SetScript("OnUpdate", nil)
+                        starterFrame:Hide()
+                    end
+                end
+            end
+
+        -- stage 4: wait for replacement bot, remove old starter bot, then delay
+        elseif stage == 4 then
+            local currentMembers = GetNumGroupMembers()
+            local replacementJoined = false
+
+            if replacementBot and playerData then
+                local normalizedReplacement = normalizePlayerName(replacementBot)
+                replacementJoined = normalizedReplacement and playerData[normalizedReplacement] ~= nil
+            end
+
+            if replacementJoined or currentMembers >= (stage3StartMembers + 1) then
+                if firstBotName and not initialBotRemoved then
+                    initialBotRemoved = true
+                    QueueDebugMessage("Removed starter bot: " .. firstBotName, "debuginfo")
+                    UninviteMember(firstBotName, "firstBotRemoved")
+                end
+
+                stage = 5
+                C_Timer.After(1, function()
+                    continueFillAfterStarter = true
+                end)
+            end
+
+        -- stage 5: continue normal fill using remaining preset bots only
+        elseif stage == 5 then
+            if continueFillAfterStarter then
+                local remainingTotal = table.getn(healers) + table.getn(others)
+
+                ResetStarterSequenceState()
+                starterSwapDone = true
+                starterFrame:SetScript("OnUpdate", nil)
+                starterFrame:Hide()
+                FillRaid(true, healers, others, remainingTotal)
+            end
+        end
+    end)
+
+    starterFrame:Show()
+end
 
 
-
-local function FillRaid()
+-- Pumpan:(20260321)
+-- FillRaid now routes large fills through StartStarterBotSequence() instead of
+-- relying on the old immediate first-bot removal flow. This fixes refill/fill-again
+-- issues and makes the starter bot replacement count correctly before continuing.
+function FillRaid(skipStarterSequence, existingHealers, existingOthers, existingTotal)
 	shouldStopBotAdding = false
-    local healers = {}
-    local others = {}
+
+    if not skipStarterSequence then
+        starterSwapDone = false
+    end
+
+    local healers = existingHealers or {}
+    local others = existingOthers or {}
     local totalHealers = 0
     local totalOthers = 0
 
     ToggleSoundEffectsVolume("lower")
 
-    
-    for class, count in pairs(classCounts) do
-        if string.find(class, "healer") then
-            for i = 1, count do
-                table.insert(healers, class)
-            end
-            totalHealers = totalHealers + count
-        else
-            for i = 1, count do
-                table.insert(others, class)
-            end
-            totalOthers = totalOthers + count
-        end
-    end
-
-
-    
-    totaly = totalHealers + totalOthers
-    
-    if IsInRaid() then
-        
-        if GetNumGroupMembers() == 2 then
-            SaveRaidMembersAndSetFirstBot()
-            QueueDebugMessage("SaveRaidMembersAndSetFirstBot called", "debugfilling")
-        end
+    if existingHealers and existingOthers then
+        totalHealers = table.getn(healers)
+        totalOthers = table.getn(others)
+        totaly = existingTotal or (totalHealers + totalOthers)
     else
-        
-        if GetNumGroupMembers() == 0 then
-			if totaly > 5 then
-				QueueMessage(".partybot add warrior tank", "SAY", true)
-				QueueDebugMessage("Inviting the first bot to start the party for a raid.", "none")
-			else
-			
-				QueueDebugMessage("Creating a party group.", "none")
-				for _, healer in ipairs(healers) do
-					QueueMessage(".partybot add " .. string.lower(healer), "SAY", true)
-				end
-				for _, other in ipairs(others) do
-					QueueMessage(".partybot add " .. string.lower(other), "SAY", true)
-				end
-				C_Timer.After(3, function()
-					ToggleSoundEffectsVolume("restore")
-				end)
-			
-			end				
-
-            
-            local waitForPartyFrame = CreateFrame("Frame")
-            waitForPartyFrame:SetScript("OnUpdate", function()
-                if GetNumGroupMembers() > 0 then
-                    waitForPartyFrame:SetScript("OnUpdate", nil)
-                    waitForPartyFrame:Hide()
-                    SavePartyMembersAndSetFirstBot()
-                    local selectedLoot = GetSelectedLootMethod()
-                    if selectedLoot == "master" then
-                       
-                        local playerName = UnitName("player")
-                        SetLootMethod("master", playerName)
-                        QueueDebugMessage("Loot method set to Master Looter. Assigned to: " .. playerName, "debuginfo")
-                    else
-                        SetLootMethod(selectedLoot)
-                        QueueDebugMessage("Loot method set to: " .. selectedLoot, "debuginfo")
-                    end
-					if totaly > 5 then
-                    FillRaid() 
-					end
+        for class, count in pairs(classCounts) do
+            if string.find(class, "healer") then
+                for i = 1, count do
+                    table.insert(healers, class)
                 end
-            end)
-            waitForPartyFrame:Show()
-            return
+                totalHealers = totalHealers + count
+            else
+                for i = 1, count do
+                    table.insert(others, class)
+                end
+                totalOthers = totalOthers + count
+            end
         end
 
-        
-        if GetNumGroupMembers() >= 2 then
-            ConvertToRaid()
-            QueueDebugMessage("Converted to raid.", "debugfilling")
-        else
-            QueueDebugMessage("You need at least 2 players in the group to convert to a raid.", "debugfilling")
-            return
-        end
+        totaly = totalHealers + totalOthers
     end
 
-    
+	if IsInRaid() then
+		if not starterSwapDone and not firstBotName and totaly > 0 then
+			StartStarterBotSequence(healers, others)
+			return
+		end
+	else
+		if totaly > 5 then
+			StartStarterBotSequence(healers, others)
+			return
+		end
 
+		if GetNumGroupMembers() == 0 then
+			QueueDebugMessage("Creating a party group.", "none")
+			QueueRemainingBots(healers, others, totaly)
+			C_Timer.After(3, function()
+				ToggleSoundEffectsVolume("restore")
+			end)
+			return
+		end
 
-    QueueDebugMessage("Adding: Going to add healers:" .. totalHealers, "debugfilling")
-    QueueDebugMessage("Adding: Going to add classes:" .. totalOthers, "debugfilling")
-    QueueDebugMessage("Adding: Totaly:" .. totaly, "debugfilling")
+		if GetNumGroupMembers() >= 2 then
+			ConvertToRaid()
+			QueueDebugMessage("Converted to raid.", "debugfilling")
+		else
+			QueueDebugMessage("You need at least 2 players in the group to convert to a raid.", "debugfilling")
+			return
+		end
+	end
 
 	local function FinalizeFillCheck(totalExpected)
 		local fillCompleteFrame = CreateFrame("Frame")
@@ -1878,7 +2087,6 @@ local function FillRaid()
 
 			local currentMembers = GetNumGroupMembers()
 
-
 			if currentMembers >= totalExpected then
 				fillCompleteFrame:SetScript("OnUpdate", nil)
 				fillCompleteFrame:Hide()
@@ -1888,7 +2096,6 @@ local function FillRaid()
 			end
 
 			local inCombatNow = IsAnyGroupMemberInCombat()
-
 
 			if inCombatNow and not inCombatPause then
 				pauseStart = GetTime()
@@ -1903,7 +2110,6 @@ local function FillRaid()
 			local timeElapsed = GetTime() - startTime - pausedTime
 			local fillTimedOut = timeElapsed >= MAX_WAIT_TIME
 			local fillStalled = timeElapsed > 10 and currentMembers == lastMemberCount
-
 
 			if not inCombatNow and (fillTimedOut or fillStalled) then
 				fillCompleteFrame:SetScript("OnUpdate", nil)
@@ -1925,7 +2131,6 @@ local function FillRaid()
 		fillCompleteFrame:Show()
 	end
 
-    
     local function addBot(class)
         local classColors = {
             warrior = "|cFFC79C6E",
@@ -1943,7 +2148,6 @@ local function FillRaid()
         local plainClass = string.lower(class)
         local coloredClass = plainClass
 
-        
         for className, color in pairs(classColors) do
             if string.find(plainClass, className) then
                 coloredClass = color .. plainClass .. resetColor
@@ -1951,12 +2155,10 @@ local function FillRaid()
             end
         end
 
-        
         QueueMessage(".partybot add " .. plainClass, "SAY", true)
         QueueDebugMessage("Added " .. coloredClass, "debugfilling")
     end
 
-    
     local function addOthers()
         QueueDebugMessage("addOthers called", "debuginfo")
         if #others == 0 then
@@ -1968,24 +2170,19 @@ local function FillRaid()
             addBot(otherClass)
         end
         FinalizeFillCheck(totaly)
-		
     end
 
-
-    
     if totalHealers == 0 then
         QueueDebugMessage("No healers found. Skipping healer addition.", "debugerror")
         addOthers()
         return
     end
 
-    
     local healersAdded = 0
     for _, healerClass in ipairs(healers) do
         addBot(healerClass)
         healersAdded = healersAdded + 1
 
-        
         if healersAdded == totalHealers then
             local waitForHealersFrame = CreateFrame("Frame")
             waitForHealersFrame:SetScript("OnUpdate", function()
@@ -1994,16 +2191,13 @@ local function FillRaid()
                     waitForHealersFrame:Hide()
                     QueueDebugMessage("FixGroups: All healers are in the raid. Starting FixGroups.", "debuginfo")
 
-                    
                     C_Timer.After(1, function()
                         isFixingGroups = true
                         currentPhase = 1
                         lastMoveTime = 0
-						
                         moveQueue = {}
                         FixGroups()
 
-                        
                         C_Timer.After(5, function()
                             QueueDebugMessage("Added: Adding other classes after healers.", "debugfilling")
                             addOthers()
@@ -2283,7 +2477,13 @@ local function CreateHelpButton(parentFrame, relativeFrame, offsetX, offsetY, to
 
    
     helpBtn:SetScript("OnClick", function()
-        PlaySound("igMainMenuOptionCheckBoxOn")
+        -- Nymz:(20260321) Classic 1.14.2 uses numeric soundKitID, not string
+        local _, _, _, tocVersion = GetBuildInfo()
+        if tocVersion == 11402 then
+            PlaySound(856)
+        else
+            PlaySound("igMainMenuOptionCheckBoxOn")
+        end
     end)
 
     return helpBtn
@@ -2318,7 +2518,7 @@ local function ShowStaticPopup(message, title, isConfirmation)
 end
 
 
---Nymz MoveButtons: savedPositions declared at file scope (not inside CreateFillRaidUI) so the
+--Nymz: MoveButtons savedPositions declared at file scope (not inside CreateFillRaidUI) so the
 -- slash command, reset function, and all button code can all access the same table.
 local savedPositions = {}
 
@@ -2398,6 +2598,53 @@ function CreateFillRaidUI()
     local yOffset = -30
     local xOffset = 10
     local totalBots = 0 
+	--========================
+	-- Pumpan:(20260319) Get zone and Set max bots depending on which zone
+	--========================
+	local raid20Zones = {
+		["Zul'Gurub"] = true,
+		["Ruins of Ahn'Qiraj"] = true,
+	}
+
+	local raid15Zones = {
+	    ["Blackrock Spire"] = true,
+		["Lower Blackrock Spire"] = true,
+		["Upper Blackrock Spire"] = true,
+	}
+
+	local dungeonZones = {
+		["Ragefire Chasm"] = true,
+		["Wailing Caverns"] = true,
+		["The Deadmines"] = true,
+		["Shadowfang Keep"] = true,
+		["Blackfathom Deeps"] = true,
+		["The Stockade"] = true,
+		["Gnomeregan"] = true,
+		["Razorfen Kraul"] = true,
+		["Scarlet Monastery"] = true,
+		["Razorfen Downs"] = true,
+		["Uldaman"] = true,
+		["Zul'Farrak"] = true,
+		["Maraudon"] = true,
+		["The Temple of Atal'Hakkar"] = true,
+		["Blackrock Depths"] = true,
+		["Dire Maul"] = true,
+		["Scholomance"] = true,
+		["Stratholme"] = true,
+	}
+	local function GetMaxBotsForCurrentZone()
+		local zone = GetRealZoneText()
+
+		if raid20Zones[zone] then
+			return 19
+		elseif raid15Zones[zone] then
+			return 14
+		elseif dungeonZones[zone] then
+			return 9
+		end
+
+		return 39
+	end	
 
     
     local totalBotLabel = FillRaidFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
@@ -2408,7 +2655,7 @@ function CreateFillRaidUI()
     
     local spotsLeftLabel = FillRaidFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
     spotsLeftLabel:SetPoint("TOP", FillRaidFrame, "TOP", 0, yOffset)
-    spotsLeftLabel:SetText("Spots Left: 39") 
+	spotsLeftLabel:SetText("Spots Left: " .. GetMaxBotsForCurrentZone()) -- Pumpan:(20260319) get max bots for the zone
     yOffset = yOffset - 25
 
     
@@ -2418,6 +2665,18 @@ function CreateFillRaidUI()
     roleCountsLabel:SetText("Tanks: 0 Healers: 0 Melee DPS: 0 Ranged DPS: 0")
     yOffset = yOffset - 30
 
+
+	local function UpdateSpotsLeft()
+	    local maxBots = GetMaxBotsForCurrentZone()
+	
+	    if totalBots < (maxBots + 1) then
+	        totalBotLabel:SetText("Total Bots: " .. totalBots)
+	        spotsLeftLabel:SetText("Spots Left: " .. math.max(0, maxBots - totalBots))
+	    else
+	        totalBotLabel:SetText("Too many added: |cffff0000" .. totalBots .. "|r")
+	        spotsLeftLabel:SetText("Spots Left: 0")
+	    end
+	end
     
     local columns = 2
     local rowsPerColumn = 14
@@ -2535,42 +2794,45 @@ function CreateFillRaidUI()
 
                 local className = classRole
 
-                classInput:SetScript("OnTextChanged", function()
-                    local newValue = tonumber(classInput:GetText()) or 0
-                    classCounts[className] = newValue
+				-- Pumpan:(20260321)
+				-- Fixed total bot counter not updating when editing class input boxes.
+				-- totalBots was recalculated in OnTextChanged, but UpdateSpotsLeft() was never called,
+				classInput:SetScript("OnTextChanged", function()
+					local newValue = tonumber(classInput:GetText()) or 0
+					classCounts[className] = newValue
 
-                    totalBots = 0
-                    roleCounts["tank"] = 0
-                    roleCounts["healer"] = 0
-                    roleCounts["meleedps"] = 0
-                    roleCounts["rangedps"] = 0
+					totalBots = 0
+					roleCounts["tank"] = 0
+					roleCounts["healer"] = 0
+					roleCounts["meleedps"] = 0
+					roleCounts["rangedps"] = 0
 
-                    for role, _ in pairs(roleCounts) do
-                        for clsRole, count in pairs(classCounts) do
-                            if string.find(clsRole, role) then
-                                roleCounts[role] = roleCounts[role] + count
-                            end
-                        end
-                    end
+								 
+										  
+					for role, _ in pairs(roleCounts) do
+						for clsRole, count in pairs(classCounts) do
+							if string.find(clsRole, role) then
+								roleCounts[role] = roleCounts[role] + count
+							end
+						end
+					end
 
-                    for _, count in pairs(classCounts) do
-                        totalBots = totalBots + count
-                    end
+													   
+					for _, count in pairs(classCounts) do
+						totalBots = totalBots + count
+																		   
+							   
+					end
+					   
 
-                    if totalBots < 40 then
-                        totalBotLabel:SetText("Total Bots: " .. totalBots)
-                        spotsLeftLabel:SetText("Spots Left: " .. (39 - totalBots))
-                    else
-                        totalBotLabel:SetText("Too many added: |cffff0000" .. totalBots .. "|r")
-                        spotsLeftLabel:SetText("Spots Left: 0")
-                    end
+					roleCountsLabel:SetText(string.format(
+						"Tanks: %d Healers: %d Melee DPS: %d Ranged DPS: %d",
+						roleCounts["tank"], roleCounts["healer"],
+						roleCounts["meleedps"], roleCounts["rangedps"]
+					))
 
-                    roleCountsLabel:SetText(string.format(
-                        "Tanks: %d Healers: %d Melee DPS: %d Ranged DPS: %d",
-                        roleCounts["tank"], roleCounts["healer"],
-                        roleCounts["meleedps"], roleCounts["rangedps"]
-                    ))
-                end)
+					UpdateSpotsLeft()
+				end)
 
                
                 classGroupYOffset = classGroupYOffset - 18
@@ -2607,7 +2869,21 @@ function CreateFillRaidUI()
 		  FillRaidFrame:Hide()
 		  fillRaidFrameManualClose = true 
 	  end)
-	  
+
+	-- =========================
+	-- -- Pumpan:(20260319) Zone update, get max bots for the zone
+	-- =========================
+	if not FillRaidBotsZoneFrame then
+	    FillRaidBotsZoneFrame = CreateFrame("Frame")
+	    FillRaidBotsZoneFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+	    FillRaidBotsZoneFrame:RegisterEvent("ZONE_CHANGED")
+	    FillRaidBotsZoneFrame:RegisterEvent("ZONE_CHANGED_INDOORS")
+	
+	    FillRaidBotsZoneFrame:SetScript("OnEvent", function()
+	        UpdateSpotsLeft()
+	    end)
+	end
+	
 	local UISettingsFrame = CreateFrame("Frame", "UISettingsFrame", UIParent)
 	UISettingsFrame:SetWidth(200)
 	UISettingsFrame:SetHeight(380)
@@ -2675,7 +2951,7 @@ local KEY_ENTER = 13
 
 
 local PresetPopup = CreateFrame("Frame", "PresetPopupFrame", UIParent, "BackdropTemplate")
-PresetPopup:SetSize(200, 250)
+PresetPopup:SetSize(300, 250)
 PresetPopup:SetPoint("CENTER", UIParent, "CENTER")
 PresetPopup:SetFrameStrata("DIALOG")
 PresetPopup:SetBackdrop({
@@ -2740,7 +3016,7 @@ end
 local function CreateInputBox(parent, point, autoFocus)
     local inputBox = CreateFrame("EditBox", nil, parent, "BackdropTemplate")
     inputBox:SetSize(180, 20)
-    inputBox:SetPoint(point, parent, "CENTER")
+    inputBox:SetPoint("LEFT", parent, "LEFT", 20, 0)
     inputBox:SetAutoFocus(autoFocus)
     inputBox:SetFontObject(GameFontNormal)
     inputBox:SetBackdrop({
@@ -2762,7 +3038,7 @@ local popupLabel = PresetPopup:CreateFontString(nil, "OVERLAY", "GameFontNormal"
 popupLabel:SetPoint("TOP", PresetPopup, "TOP", 0, -10)
 
 
-local helpButton = CreateHelpButton(PresetPopup, popupLabel, 10, 0, "Enter name:\n  - Preset name to save the current setup\n\nBoss names:\n  - Name of the boss or mob for the Ctrl+Alt+Click function\n\nTip:\n  - Hold Alt and click a mob to add it to the list.", "Preset Help")
+local helpButton = CreateHelpButton(PresetPopup, popupLabel, 10, 0, "Enter name:\n  - Preset name to save the current setup\n\nBoss names:\n  - Name of the boss or mob for the Ctrl+Alt+Click function\n\nZone button:\n  - Adds your current zone to the boss list\n\nTip:\n  - Hold Alt and click a mob to add it to the list.", "Preset Help")
 
 
 local presetInput = CreateInputBox(PresetPopup, "TOP", true)
@@ -2780,6 +3056,9 @@ bossInputLabel:SetText("Boss Names: (optional)")
 
 local addBossButton = CreateButton(PresetPopup, 60, 20, "LEFT", "Add")
 addBossButton:SetPoint("LEFT", bossInput, "RIGHT", 5, 0)
+
+local addZoneButton = CreateButton(PresetPopup, 60, 20, "LEFT", "Zone") --Pumpan:(20260321) added a add zone button to the save as/rename
+addZoneButton:SetPoint("LEFT", addBossButton, "RIGHT", 5, 0)
 
 
 local bossListScrollFrame = CreateFrame("ScrollFrame", "BossListScrollFrame", PresetPopup, "UIPanelScrollFrameTemplate")
@@ -2803,37 +3082,37 @@ local function tableSize(t)
     return count
 end
 
+-- Pumpan: (20260321) Added Zone button to preset popup (adds current zone to boss list).
+local AddBossDirectly
+local AddCurrentZoneToBosses
 
 function RefreshBossList()
-   
     for i = 1, tableSize(bossListItems) do
         local item = bossListItems[i]
-        if item and item.frame then 
-            item.frame:Hide() 
-            item.frame:SetParent(nil) 
+        if item and item.frame then
+            item.frame:Hide()
+            item.frame:SetParent(nil)
         end
     end
     bossListItems = {}
-    
+
     local itemHeight = 28
     local spacing = 5
     local totalHeight = 0
     local width = bossListScrollFrame:GetWidth() - 20
-    
+
     local index = 1
     for i, bossName in pairs(currentBosses) do
         local itemFrame = CreateFrame("Frame", nil, bossListScrollChild)
         itemFrame:SetWidth(width)
         itemFrame:SetHeight(itemHeight)
-        itemFrame:SetPoint("TOPLEFT", 0, -((index-1) * (itemHeight + spacing)))
-        
-       
+        itemFrame:SetPoint("TOPLEFT", 0, -((index - 1) * (itemHeight + spacing)))
+
         local label = itemFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         label:SetPoint("LEFT", itemFrame, "LEFT", 5, 0)
         label:SetText("- " .. bossName)
         label:SetJustifyH("LEFT")
-        
-       
+
         local removeButton = CreateFrame("Button", nil, itemFrame, "UIPanelButtonTemplate")
         removeButton:SetWidth(25)
         removeButton:SetHeight(25)
@@ -2843,16 +3122,14 @@ function RefreshBossList()
             tremove(currentBosses, i)
             RefreshBossList()
         end)
-        
-       
+
         itemFrame:EnableMouse(true)
         itemFrame:SetScript("OnMouseDown", function(self, button)
             if IsAltKeyDown() then
                 AddBossDirectly(bossName)
             end
         end)
-        
-       
+
         itemFrame:SetScript("OnEnter", function()
             GameTooltip:SetOwner(itemFrame, "ANCHOR_RIGHT")
             GameTooltip:SetText("ALT-click to add again")
@@ -2861,59 +3138,81 @@ function RefreshBossList()
         itemFrame:SetScript("OnLeave", function()
             GameTooltip:Hide()
         end)
-        
+
         bossListItems[index] = {
             frame = itemFrame,
             label = label,
             button = removeButton
         }
-        
+
         totalHeight = totalHeight + itemHeight + spacing
         index = index + 1
     end
-    
-   
+
     local visibleHeight = bossListScrollFrame:GetHeight()
     bossListScrollChild:SetHeight(math.max(totalHeight, visibleHeight + 1))
     bossListScrollFrame:UpdateScrollChildRect()
     bossListScrollFrame:SetVerticalScroll(0)
 end
 
-
-local function AddBossDirectly(bossName)
+AddBossDirectly = function(bossName)
     if not PresetPopup:IsVisible() then return end
-    
+
     bossName = strtrim(bossName)
     if bossName == "" then return end
-    
+
     local lowerName = strlower(bossName)
     for _, existing in pairs(currentBosses) do
-        if strlower(existing) == lowerName then 
-            ShowStaticPopup(bossName.." already in list!", "ERROR")
-            return 
+        if strlower(existing) == lowerName then
+            ShowStaticPopup(bossName .. " already in list!", "ERROR")
+            return
         end
     end
-    
+
     tinsert(currentBosses, bossName)
     RefreshBossList()
-    DEFAULT_CHAT_FRAME:AddMessage(bossName.." added to list!")
+    DEFAULT_CHAT_FRAME:AddMessage(bossName .. " added to list!")
 end
 
+AddCurrentZoneToBosses = function()
+    if not PresetPopup:IsVisible() then return end
+
+    local zone = GetRealZoneText()
+    if not zone or zone == "" then return end
+
+    local lowerZone = strlower(zone)
+    for _, existing in pairs(currentBosses) do
+        if strlower(existing) == lowerZone then
+            ShowStaticPopup(zone .. " already in list!", "ERROR")
+            return
+        end
+    end
+
+    tinsert(currentBosses, zone)
+    RefreshBossList()
+    DEFAULT_CHAT_FRAME:AddMessage(zone .. " added to list!")
+end
 
 addBossButton:SetScript("OnClick", function()
     local name = strtrim(bossInput:GetText())
     if name ~= "" then
-       
-        for _, existing in ipairs(currentBosses) do
-            if existing == name then return end
-        end
-       
-        table.insert(currentBosses, name)
+        AddBossDirectly(name)
         bossInput:SetText("")
-        RefreshBossList()
     end
 end)
 
+addZoneButton:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText("Add current zone")
+    GameTooltip:Show()
+end)
+
+addZoneButton:SetScript("OnLeave", function()
+    GameTooltip:Hide()
+end)
+addZoneButton:SetScript("OnClick", function()
+    AddCurrentZoneToBosses()
+end)
 
 local targetScanFrame = CreateFrame("Frame")
 targetScanFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
@@ -3892,6 +4191,15 @@ end)
 
 
 
+-- Pumpan:(20260321)
+--   - Added starter sequence state flags: starterSequenceRunning, continueFillAfterStarter, starterSwapDone.
+--   - Added ResetStarterSequenceState() to fully clear starter/fill state when the group is emptied.
+--   - Added StartStarterBotSequence() to support solo, party, and raid starts for >5 bot fills.
+--   - Guarded firstBotRemovalFrame so normal first-bot removal does not fire during starter swap.
+--   - Updated FillRaid() to use the staged starter swap before continuing normal fill.
+--   - Kept raid completion check aligned with the new flow so totals are counted correctly.
+--   - Fixed total bot counter refresh while editing class input boxes.
+--
 -------------------------------------------------------------------------------------------------------------------------------------
 	local editmodeshown = false
 	local editButton = CreateFrame("Button", nil, FillRaidFrame, "GameMenuButtonTemplate")
@@ -4194,7 +4502,7 @@ function CreateInstanceFrame(name, presets, label)
 
     local totalButtonWidth = buttonWidth + padding
     local totalButtonHeight = buttonHeight + padding
-	--Nymz OthersButton: always reserve a slot for the Others button so the frame is sized correctly
+	--Nymz: OthersButton always reserve a slot for the Others button so the frame is sized correctly
 	-- visibility is controlled later by ToggleOthersButton
 	local numButtons = table.getn(presets) + 1
     local numColumns = math.ceil(numButtons / maxButtonsPerColumn)
@@ -4335,7 +4643,7 @@ function CreateInstanceFrame(name, presets, label)
         CreatePresetButton(preset, index)
     end
 
---Nymz OthersButton: always create the Others button on every frame except PresetDungeounOther itself
+--Nymz: OthersButton always create the Others button on every frame except PresetDungeounOther itself
 -- hide it initially if the setting is off so ToggleOthersButton can show/hide it live
 if name ~= "PresetDungeounOther" then
     local othersIndex = table.getn(presets) + 1
@@ -4354,10 +4662,10 @@ if name ~= "PresetDungeounOther" then
 
     button:SetText("Others")
 
-    --Nymz OthersButton: store reference on the frame so ToggleOthersButton can show/hide it live
+    --Nymz: OthersButton store reference on the frame so ToggleOthersButton can show/hide it live
     frame.othersButton = button
 
-    --Nymz OthersButton: hide immediately if the setting is currently off
+    --Nymz: OthersButton hide immediately if the setting is currently off
     if not OthersButtonEnabled then
         button:Hide()
     end
@@ -4369,7 +4677,7 @@ if name ~= "PresetDungeounOther" then
         end
     end)
 end
---Nymz OthersButton: live toggle for the Others button - without this the checkbox requires /rl to take effect
+--Nymz: OthersButton live toggle for the Others button - without this the checkbox requires /rl to take effect
 -- iterates all instance frames and shows/hides the stored othersButton reference
 function ToggleOthersButton(value)
     OthersButtonEnabled = value
@@ -4704,12 +5012,11 @@ end
 			end
 		end
 
-		
-		totalBotLabel:SetText("Total Bots: 0")
-		spotsLeftLabel:SetText("Spots Left: 39")
-		roleCountsLabel:SetText("Tanks: 0 Healers: 0 Melee DPS: 0 Ranged DPS: 0")
-	end)
+		totalBots = 0
+		UpdateSpotsLeft() -- Pumpan:(20260319) update reset for the zone
+		roleCountsLabel:SetText("Tanks: 0 Healers: 0 Melee DPS: 0 Ranged DPS: 0")			
 
+	end)
 
 
 	  
@@ -4734,11 +5041,11 @@ end
 
 		
 local openFillRaidButton = CreateFrame("Button", "OpenFillRaidButton", PCPFrame)  
---Nymz MoveButtons: Global alias so FillRaidBots_ResetButtonPositions can access this local.
+-- Nymz: ButtonSize (20260316) Global alias so FillRaidBots_ResetButtonPositions can access this local.
 FRB_openFillRaidButton = openFillRaidButton
 openFillRaidButton:SetMovable(true)  
 openFillRaidButton:EnableMouse(true)  
---Nymz MoveButtons: SetUserPlaced(true) tells the engine the button is freely positioned.
+--Nymz: MoveButtons SetUserPlaced(true) tells the engine the button is freely positioned.
 -- Without it, StartMoving() fights the parent-relative anchor every frame.
 openFillRaidButton:SetUserPlaced(true)
 openFillRaidButton:RegisterForDrag("LeftButton")  
@@ -4749,7 +5056,7 @@ local defaultPosition = {x = -20, y = 250}
 local function GetPCPFrame()
     return PCPFrame or PCPFrameRemake
 end
---Nymz MoveButtons: InitializeButtonPosition restores the button from SavedVariables on load.
+--Nymz: MoveButtons InitializeButtonPosition restores the button from SavedVariables on load.
 -- In Relative mode, uses physical-pixel offset from PCP. In Free mode, uses absolute physical position.
 -- Called on load (after CreateFillRaidUI) and after reset. Never called every frame.
 function InitializeButtonPosition()
@@ -4788,7 +5095,7 @@ function InitializeButtonPosition()
         if savedPosition and savedPosition.offsetX then
             local uiScale = UIParent:GetEffectiveScale()
             if FillRaidBotsSavedSettings.moveButtonsRelative then
-                --Nymz MoveButtons: Relative mode - restore using PCP physical position + stored offset.
+                --Nymz: MoveButtons Relative mode - restore using PCP physical position + stored offset.
                 local pcp = PCPVersionCheck
                 local pcpPhysX = pcp:GetLeft() * pcp:GetEffectiveScale()
                 local pcpPhysY = pcp:GetTop()  * pcp:GetEffectiveScale()
@@ -4796,7 +5103,7 @@ function InitializeButtonPosition()
                     (pcpPhysX + savedPosition.offsetX) / uiScale,
                     (pcpPhysY + savedPosition.offsetY) / uiScale)
             elseif savedPosition.absX then
-                --Nymz MoveButtons: Free mode - restore absolute physical position.
+                --Nymz: MoveButtons Free mode - restore absolute physical position.
                 openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT",
                     savedPosition.absX / uiScale, savedPosition.absY / uiScale)
             end
@@ -4808,12 +5115,38 @@ function InitializeButtonPosition()
             openFillRaidButton:SetPoint("CENTER", PCPVersionCheck, "LEFT",
                 defaultPosition.x + offsetX, defaultPosition.y + offsetY)
         end
+		-- Pumpan: (20260320) InitializeButtonPosition() commented this out again (should not be needed any more)
+		-- Pumpan: (20260318) InitializeButtonPosition() - commented this out because I think
+		-- my fix in ToggleButtonMovement() makes this redundant.
+		--
+        -- Nymz: MoveButtons (20260317) Apply same horizontal Fixed mode anchoring as RepositionButtonsFromOffset.
+        -- Pumpan fixed horizontal layout in RepositionButtonsFromOffset but not here, causing wrong
+        -- button positions on load before PCP moves for the first time.
+        -- GetButtonLayout/GetButtonSpacing are defined later in the file so read SavedSettings directly.
+        --local layout = FillRaidBotsSavedSettings.ButtonLayout or "vertical"
+        --local spacing = FillRaidBotsSavedSettings.ButtonSpacing or 4
+        --if not FillRaidBotsSavedSettings.moveButtonsRelative and
+        --   not FillRaidBotsSavedSettings.moveButtonsEnabled and
+        --   layout == "horizontal" then
+        --    local pcp = PCPVersionCheck
+        --    local pcpPhysX = pcp:GetLeft() * pcp:GetEffectiveScale()
+        --    local pcpPhysY = pcp:GetTop()  * pcp:GetEffectiveScale()
+        --    local uiScale  = UIParent:GetEffectiveScale()
+        --    FRB_reFillButton:ClearAllPoints()
+        --    FRB_reFillButton:SetPoint("TOPRIGHT", UIParent, "BOTTOMLEFT",
+        --        pcpPhysX / uiScale,
+        --        pcpPhysY / uiScale)
+        --    FRB_kickAllButton:ClearAllPoints()
+        --    FRB_kickAllButton:SetPoint("RIGHT", FRB_reFillButton, "LEFT", -spacing, 0)
+        --    FRB_openFillRaidButton:ClearAllPoints()
+        --    FRB_openFillRaidButton:SetPoint("RIGHT", FRB_kickAllButton, "LEFT", -spacing, 0)
+        --end
     end
 end
 
 
 
---Nymz MoveButtons: ToggleButtonMovement sets up drag behaviour based on current mode:
+--Nymz: MoveButtons ToggleButtonMovement sets up drag behaviour based on current mode:
 --   Fixed    - button is child of PCPFrame, moves with it automatically, no drag.
 --   Free     - button is child of UIParent, drag to any screen position.
 --   Relative - button is child of UIParent, tracks PCP window via stored physical-pixel offset.
@@ -4824,11 +5157,11 @@ function ToggleButtonMovement()
     local isRelative = FillRaidBotsSavedSettings.moveButtonsRelative
 
     if isFree or isRelative then
-        --Nymz MoveButtons: Free/Relative mode - reparent to UIParent so button is screen-independent.
+        --Nymz: MoveButtons Free/Relative mode - reparent to UIParent so button is screen-independent.
         openFillRaidButton:SetParent(UIParent)
         openFillRaidButton:SetMovable(true)
 
-        --Nymz MoveButtons: Re-anchor at current physical position to cut any lingering PCPFrame anchor.
+        --Nymz: MoveButtons Re-anchor at current physical position to cut any lingering PCPFrame anchor.
         -- Guard against nil GetLeft() on first load before the button has been positioned.
         if openFillRaidButton:GetLeft() then
             local physX  = openFillRaidButton:GetLeft() * openFillRaidButton:GetEffectiveScale()
@@ -4837,9 +5170,37 @@ function ToggleButtonMovement()
             openFillRaidButton:ClearAllPoints()
             openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", physX / uiScale, physY / uiScale)
         end
+		-- Pumpan:(20260321) Fix Free mode init.
+		-- Free mode had no absX/absY until first drag, causing spacing to fail
+		-- and /reload to reset to default. Saving position on enable fixes this.	
+        if isFree and openFillRaidButton:GetLeft() then
+            local btnPhysX = openFillRaidButton:GetLeft() * openFillRaidButton:GetEffectiveScale()
+            local btnPhysY = openFillRaidButton:GetTop()  * openFillRaidButton:GetEffectiveScale()
 
+            local pcp = GetPCPFrame()
+            if pcp then
+                local pcpPhysX = pcp:GetLeft() * pcp:GetEffectiveScale()
+                local pcpPhysY = pcp:GetTop()  * pcp:GetEffectiveScale()
+                local offsetX  = btnPhysX - pcpPhysX
+                local offsetY  = btnPhysY - pcpPhysY
+
+                savedPositions["OpenFillRaidButton"] = {
+                    offsetX = offsetX,
+                    offsetY = offsetY,
+                    absX = btnPhysX,
+                    absY = btnPhysY
+                }
+
+                FillRaidBotsSavedSettings.buttonPositionRelative = {
+                    offsetX = offsetX,
+                    offsetY = offsetY,
+                    absX = btnPhysX,
+                    absY = btnPhysY
+                }
+            end
+        end
         if isRelative then
-            --Nymz MoveButtons: Switching to Relative - compute fresh offset from current position
+            --Nymz: MoveButtons Switching to Relative - compute fresh offset from current position
             -- so the button stays exactly where it is visually.
             local pcp = GetPCPFrame()
             if pcp and openFillRaidButton:GetLeft() then
@@ -4860,18 +5221,18 @@ function ToggleButtonMovement()
         end)
 
         openFillRaidButton:SetScript("OnDragStop", function(self)
-            --Nymz MoveButtons: Capture physical pixels BEFORE StopMovingOrSizing.
+            --Nymz: MoveButtons Capture physical pixels BEFORE StopMovingOrSizing.
             local btnPhysX = self:GetLeft() * self:GetEffectiveScale()
             local btnPhysY = self:GetTop()  * self:GetEffectiveScale()
             self:StopMovingOrSizing()
-            --Nymz MoveButtons: Reparent to UIParent (StartMoving temporarily parents to WorldFrame).
+            --Nymz: MoveButtons Reparent to UIParent (StartMoving temporarily parents to WorldFrame).
             self:SetParent(UIParent)
 
             local uiScale = UIParent:GetEffectiveScale()
             self:ClearAllPoints()
             self:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", btnPhysX / uiScale, btnPhysY / uiScale)
 
-            --Nymz MoveButtons: Compute and store physical-pixel offset (btn TOPLEFT minus PCP TOPLEFT).
+            --Nymz: MoveButtons Compute and store physical-pixel offset (btn TOPLEFT minus PCP TOPLEFT).
             -- Also store absolute position for Free mode restore after /rl.
             local pcp = GetPCPFrame()
             local pcpPhysX = pcp:GetLeft() * pcp:GetEffectiveScale()
@@ -4882,23 +5243,50 @@ function ToggleButtonMovement()
             savedPositions["OpenFillRaidButton"] = {offsetX = offsetX, offsetY = offsetY, absX = btnPhysX, absY = btnPhysY}
             FillRaidBotsSavedSettings.buttonPositionRelative = {offsetX = offsetX, offsetY = offsetY, absX = btnPhysX, absY = btnPhysY}
 
-            --Nymz MoveButtons: Lift isMoving guard only after all data is committed so
+            --Nymz: MoveButtons Lift isMoving guard only after all data is committed so
             -- RepositionButtonsFromOffset cannot fire with stale savedPositions.
             self.isMoving = false
         end)
 
+        -- Nymz: if Free mode is active and the lock is on, strip the drag scripts
+        -- so buttons stay frozen until the user clicks the green lock.
+        -- Must check isFree explicitly - Relative mode must never be blocked by this guard.
+        if isFree and FillRaidBotsSavedSettings.buttonMoveLocked then
+            openFillRaidButton:SetScript("OnDragStart", nil)
+            openFillRaidButton:SetScript("OnDragStop",  nil)
+            openFillRaidButton:SetMovable(false)
+        end
+
     else
-        --Nymz MoveButtons: Fixed mode - reparent to PCPFrame so button moves with it automatically.
+        --Nymz: MoveButtons Fixed mode - reparent to PCPFrame so button moves with it automatically.
         openFillRaidButton:SetScript("OnDragStart", nil)
         openFillRaidButton:SetScript("OnDragStop", nil)
         openFillRaidButton:SetMovable(false)
         savedPositions["OpenFillRaidButton"] = nil
         FillRaidBotsSavedSettings.buttonPosition = nil
         FillRaidBotsSavedSettings.buttonPositionRelative = nil
-        local pcp = GetPCPFrame()
-        if pcp then
-            openFillRaidButton:SetParent(pcp)
-        end
+		-- Pumpan(20250318):
+		-- Horizontal layout now uses UIParent instead of PCPFrame to avoid position bugs (ElvUI).
+		-- Also reapplies style + size after parent change to prevent scaling issues.
+        local pcp    = GetPCPFrame()
+        local layout = FillRaidBotsSavedSettings.ButtonLayout or "vertical"
+
+		if layout == "horizontal" then
+			if FRB_openFillRaidButton then FRB_openFillRaidButton:SetParent(UIParent) end
+			if FRB_kickAllButton      then FRB_kickAllButton:SetParent(UIParent) end
+			if FRB_reFillButton       then FRB_reFillButton:SetParent(UIParent) end
+
+			ApplyButtonStyle(FillRaidBotsSavedSettings.selectedButtonTheme)
+			UpdateButtonSizes()
+		else
+			if pcp then
+				if FRB_openFillRaidButton then FRB_openFillRaidButton:SetParent(pcp) end
+				if FRB_kickAllButton      then FRB_kickAllButton:SetParent(pcp) end
+				if FRB_reFillButton       then FRB_reFillButton:SetParent(pcp) end
+			end
+		end
+
+
         InitializeButtonPosition()
     end
 end
@@ -4906,6 +5294,59 @@ end
 
 InitializeButtonPosition()
 ToggleButtonMovement()
+
+-- Nymz: ToggleButtonMoveLock
+-- Called by the red/green lock button in UISettings next to "Moving Buttons (Free)".
+-- When locked  (true)  : drag scripts are removed so buttons sit frozen in place.
+-- When unlocked(false) : drag scripts are restored so buttons can be freely dragged.
+-- Note: only touches drag scripts - layout (horizontal/vertical) is unaffected.
+function ToggleButtonMoveLock(isLocked)
+    local isFree = FillRaidBotsSavedSettings.moveButtonsEnabled
+
+    -- Lock/unlock only applies in Free mode. In Fixed/Relative, ToggleButtonMovement
+    -- owns the drag scripts entirely - ToggleButtonMoveLock never touches them.
+    if not isFree then
+        if FRB_FreeModeLocBtn_Refresh then FRB_FreeModeLocBtn_Refresh() end
+        return
+    end
+
+    if isLocked then
+        openFillRaidButton:SetScript("OnDragStart", nil)
+        openFillRaidButton:SetScript("OnDragStop",  nil)
+        openFillRaidButton:SetMovable(false)
+    else
+        openFillRaidButton:SetMovable(true)
+
+        openFillRaidButton:SetScript("OnDragStart", function(self)
+            self:StartMoving()
+            self.isMoving = true
+        end)
+
+        openFillRaidButton:SetScript("OnDragStop", function(self)
+            local btnPhysX = self:GetLeft() * self:GetEffectiveScale()
+            local btnPhysY = self:GetTop()  * self:GetEffectiveScale()
+            self:StopMovingOrSizing()
+            self:SetParent(UIParent)
+
+            local uiScale = UIParent:GetEffectiveScale()
+            self:ClearAllPoints()
+            self:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", btnPhysX / uiScale, btnPhysY / uiScale)
+
+            local pcp = GetPCPFrame()
+            local pcpPhysX = pcp:GetLeft() * pcp:GetEffectiveScale()
+            local pcpPhysY = pcp:GetTop()  * pcp:GetEffectiveScale()
+            local offsetX  = btnPhysX - pcpPhysX
+            local offsetY  = btnPhysY - pcpPhysY
+
+            savedPositions["OpenFillRaidButton"] = {offsetX = offsetX, offsetY = offsetY, absX = btnPhysX, absY = btnPhysY}
+            FillRaidBotsSavedSettings.buttonPositionRelative = {offsetX = offsetX, offsetY = offsetY, absX = btnPhysX, absY = btnPhysY}
+
+            self.isMoving = false
+        end)
+    end
+
+    if FRB_FreeModeLocBtn_Refresh then FRB_FreeModeLocBtn_Refresh() end
+end
 
 
 
@@ -4941,8 +5382,8 @@ openFillRaidButton:SetScript("OnClick", openFillRaid)
 
 	
 
-	local kickAllButton = CreateFrame("Button", "OpenFillRaidButton", GetPCPFrame())
-	--Nymz MoveButtons: Global alias so FillRaidBots_ResetButtonPositions can access this local.
+	local kickAllButton = CreateFrame("Button", "KickAllButton", GetPCPFrame())
+	-- Nymz: ButtonSize (20260316) Global alias so FillRaidBots_ResetButtonPositions can access this local.
 	FRB_kickAllButton = kickAllButton
 	kickAllButton:SetScript("OnClick", function()
 		UninviteAllRaidMembers()
@@ -4953,7 +5394,7 @@ openFillRaidButton:SetScript("OnClick", openFillRaid)
 	kickAllButton:Hide() 
 
 local reFillButton = CreateFrame("Button", "reFillButton", GetPCPFrame())
---Nymz MoveButtons: Global alias so FillRaidBots_ResetButtonPositions can access this local.
+-- Nymz: ButtonSize (20260316) Global alias so FillRaidBots_ResetButtonPositions can access this local.
 FRB_reFillButton = reFillButton
 function ToggleSmallbuttonCheck(isChecked)
     SmallbuttonEnabled = isChecked
@@ -5021,8 +5462,11 @@ end
 function UpdateButtonSizes()
     if not FillRaidBotsSavedSettings then return end
 
-    local size = FillRaidBotsSavedSettings.ButtonSize or 40
+    local pct = FillRaidBotsSavedSettings.ButtonSize or 100
     local themeKey = FillRaidBotsSavedSettings.selectedButtonTheme or "Mini"
+    -- Nymz: (20260318) MoveButtons ButtonSize is now stored as % not px. Convert to pixels using theme default.
+    local defaultSize = GetThemeDefaultSize()
+    local size = math.floor(defaultSize * (pct / 100) + 0.5)
 
     local w, h = size, size 
 
@@ -5063,52 +5507,240 @@ function UpdateButtonSizes()
 
     RepositionButtonsFromOffset()
 end
+
+-- Pumpan: Fix (20260318) function ApplyButtonLayout(layout)
+-- Problem: Switching to horizontal layout at runtime (after login) caused wrong button positions,
+-- same issue as the reload issue.
+
+-- Fix: Call ToggleButtonMovement() when layout changes so parent + style + scale are reapplied
+-- before repositioning.
+--
 function ApplyButtonLayout(layout)
     FillRaidBotsSavedSettings.ButtonLayout = layout
+    -- Re-run movement mode handling so correct parent is applied
+    ToggleButtonMovement()
+
     RepositionButtonsFromOffset()
 end
+
 ToggleSmallbuttonCheck(SmallbuttonEnabled or false) 
 
+-- Pumpan:(20260323) Refill now tracks pending requests so the loop keeps running until the
+-- system is stable. This avoids missing a refill when the dead bot is removed after the
+-- replacement was already requested.
+ResetRefillLoopState = function()
+    refillLoopRunning = false
+    refillRecheckPending = false
+    PendingRefill = {}
+    refillFinalCheckPending = false
+end
 
+FinishRefillLoop = function()
+    ResetRefillLoopState()
+    ToggleSoundEffectsVolume("restore")
+    UpdateReFillButtonVisibility()
+end
 
 function UpdateReFillButtonVisibility()
-    if next(ReplaceDeadBot) == nil then
-	
-        reFillButton:Hide()
+    if refillLoopRunning or next(ReplaceDeadBot) ~= nil or next(PendingRefill) ~= nil then
+        if refillLoopRunning then
+            reFillButton:Hide()
+        else
+            if FillRaidBotsSavedSettings.isRefillEnabled then
+                reFillButton:Show()
+            end
+        end
     else
-	if FillRaidBotsSavedSettings.isRefillEnabled then
-        reFillButton:Show()
-		
-	end
+        reFillButton:Hide()
     end
 end
 
+-- Pumpan:(20260324) Refill timing based on group size.
+-- Larger raids (39) run instantly for speed.
+-- Smaller groups add delay to avoid invite/queue issues and missed bots.
+local function GetRefillDelay()
+    local maxBots = GetMaxBotsForCurrentZone()
 
-function RefillBots()
-    if next(ReplaceDeadBot) == nil then
-        QueueDebugMessage("Replaced Bot List is empty.", "debugfilling")
-    else
-        ToggleSoundEffectsVolume("lower")
-        QueueDebugMessage("Replaced Bot List:", "debugfilling")
+    if maxBots == 39 then
+        return 0
+    elseif maxBots == 19 then
+        return 0.3
+    elseif maxBots == 14 then
+        return 0.5
+    elseif maxBots == 9 then
+        return 0.5
+    end
 
-        local count = 0
-        for playerName, data in pairs(ReplaceDeadBot) do
-            count = count + 1
-            QueueDebugMessage(playerName .. " - Class: " .. data.classColored .. ", Role: " .. data.role, "debugfilling")
-            QueueMessage(".partybot add " .. data.ClassNoColor .. " " .. data.role, "SAY", true)
+    return 0
+end
+
+-- Pumpan:(20260324) Limits how many bots are added per refill pass.
+-- Prevents overfilling and ensures stable group/raid conversion.
+-- 39 = unlimited (fill as fast as possible)
+-- Smaller groups use batching to avoid invite failures and desync.
+local function GetRefillBatchLimit()
+    local maxBots = GetMaxBotsForCurrentZone()
+
+    if maxBots == 39 then
+        return nil
+    elseif maxBots == 19 then
+        return 3
+    elseif maxBots == 14 then
+        return 2
+    elseif maxBots == 9 then
+        return 1
+    end
+
+    return 1
+end
+
+ScheduleRefillRecheck = function(delay)
+    if refillRecheckPending then
+        return
+    end
+
+    refillRecheckPending = true
+    C_Timer.After(delay or 0.8, function()
+        refillRecheckPending = false
+
+        if not refillLoopRunning then
+            UpdateReFillButtonVisibility()
+            return
         end
 
-        ReplaceDeadBot = {}
-        QueueDebugMessage("Replaced Bot List has been cleared.", "debugfilling")
+        RecheckRefillState()
+    end)
+end
 
-       
-        local delay = 1 + math.max(0, (count - 1) * 0.5)
-        C_Timer.After(delay, function()
-            ToggleSoundEffectsVolume("restore")
-        end)
+RecheckRefillState = function()
+    local playerName, pendingData
+    local retryCount = 0
 
+    if not refillLoopRunning then
+        return
+    end
+
+    UpdateGroupMembers()
+
+    for playerName, pendingData in pairs(PendingRefill) do
+        if not groupMembers[playerName] then
+            PendingRefill[playerName] = nil
+            QueueDebugMessage("Refill settled for: " .. playerName, "debugfilling")
+        elseif GetTime() - pendingData.requestedAt >= 2.5 then
+            if pendingData.attempts < 3 then
+                ReplaceDeadBot[playerName] = pendingData.data
+                retryCount = retryCount + 1
+                QueueDebugMessage("Refill retry queued for: " .. playerName, "debugfilling")
+            else
+                QueueDebugMessage("Refill gave up after 3 attempts for: " .. playerName, "debugerror")
+            end
+            PendingRefill[playerName] = nil
+        end
+    end
+
+    if next(ReplaceDeadBot) ~= nil then
+        QueueDebugMessage("Refill pass incomplete, running another pass.", "debugfilling")
+        RunRefillPass()
+        return
+    end
+
+    if next(PendingRefill) ~= nil then
+        QueueDebugMessage("Refill waiting for pending removals to settle.", "debugfilling")
+        ScheduleRefillRecheck(0.8)
+        return
+    end
+
+    if not refillFinalCheckPending then
+        refillFinalCheckPending = true
+        QueueDebugMessage("Refill looks complete, doing one final safety check.", "debugfilling")
+        ScheduleRefillRecheck(0.6)
+        return
+    end
+
+    QueueDebugMessage("Refill finished with no missing bots left.", "debugfilling")
+    FinishRefillLoop()
+end
+
+RunRefillPass = function()
+    local count = 0
+    local delay
+    local batchLimit = GetRefillBatchLimit()
+    local playerName, data, pendingData
+
+    if not refillLoopRunning then
+        return
+    end
+
+    if next(ReplaceDeadBot) == nil then
+        if next(PendingRefill) ~= nil then
+            ScheduleRefillRecheck(0.8)
+        else
+            QueueDebugMessage("Refill complete. Replaced Bot List is empty.", "debugfilling")
+            FinishRefillLoop()
+        end
+        return
+    end
+
+    QueueDebugMessage("Replaced Bot List:", "debugfilling")
+
+    for playerName, data in pairs(ReplaceDeadBot) do
+        if batchLimit and count >= batchLimit then
+            break
+        end
+
+        if data and data.ClassNoColor and data.role then
+            pendingData = PendingRefill[playerName]
+
+            if pendingData then
+                QueueDebugMessage("Refill already pending for: " .. playerName, "debugfilling")
+            else
+                count = count + 1
+                QueueDebugMessage(playerName .. " - Class: " .. data.classColored .. ", Role: " .. data.role, "debugfilling")
+                QueueMessage(".partybot add " .. data.ClassNoColor .. " " .. data.role, "SAY", true)
+
+                PendingRefill[playerName] = {
+                    data = data,
+                    requestedAt = GetTime(),
+                    attempts = (data._refillAttempts or 0) + 1
+                }
+                data._refillAttempts = PendingRefill[playerName].attempts
+                ReplaceDeadBot[playerName] = nil
+            end
+        else
+            ReplaceDeadBot[playerName] = nil
+        end
+    end
+
+    QueueDebugMessage("Processed refill batch: " .. count, "debugfilling")
+
+    -- Pumpan:(20260324) Keep old scaled recheck timing, but use zone-based base delay.
+    delay = GetRefillDelay() + math.max(0, (count - 1) * 0.2)
+    ScheduleRefillRecheck(delay)
+end
+
+function RefillBots()
+    if refillLoopRunning then
+        QueueDebugMessage("Refill already running.", "debugfilling")
+        return
+    end
+
+    if next(ReplaceDeadBot) == nil and next(PendingRefill) == nil then
+        QueueDebugMessage("Replaced Bot List is empty.", "debugfilling")
         UpdateReFillButtonVisibility()
-    end  
+        return
+    end
+
+    refillLoopRunning = true
+    refillRecheckPending = false
+    refillFinalCheckPending = false
+    ToggleSoundEffectsVolume("lower")
+    UpdateReFillButtonVisibility()
+
+    if next(ReplaceDeadBot) ~= nil then
+        RunRefillPass()
+    else
+        ScheduleRefillRecheck(0.2)
+    end
 end
 
 reFillButton:SetScript("OnClick", RefillBots)
@@ -5117,7 +5749,7 @@ UpdateReFillButtonVisibility()
 --=====================================================
 -- GetButtonLayout - vertical or horizontal
 --=====================================================
-local function GetButtonLayout()
+function GetButtonLayout()
 
     if FillRaidBotsSavedSettings
     and FillRaidBotsSavedSettings.ButtonLayout ~= nil then
@@ -5135,8 +5767,8 @@ end
 -- Refractored to allow spacing from the UIsettings file
 -- =====================================================
 
---Nymz MoveButtons: GetButtonSpacing reads the current theme spacing from SettingsConfig.
-local function GetButtonSpacing()
+--Nymz: MoveButtons GetButtonSpacing reads the current theme spacing from SettingsConfig.
+function GetButtonSpacing()
     -- Pumpan: slider override
     if FillRaidBotsSavedSettings
     and FillRaidBotsSavedSettings.ButtonSpacing ~= nil then
@@ -5167,12 +5799,13 @@ local function GetButtonSpacing()
 end
 
 
---Nymz MoveButtons: RepositionButtonsFromOffset repositions openFillRaidButton using the stored
+--Nymz: MoveButtons RepositionButtonsFromOffset repositions openFillRaidButton using the stored
 -- physical-pixel offset from PCP (Relative mode) or absolute position (Free mode),
 -- then stacks kickAllButton and reFillButton below it.
 -- Called once when PCP position changes (detected in OnUpdate), and on load via PLAYER_LOGIN.
 function RepositionButtonsFromOffset()
     if openFillRaidButton.isMoving then return end
+
     local savedPosition = savedPositions["OpenFillRaidButton"]
     local uiScale = UIParent:GetEffectiveScale()
     local layout = GetButtonLayout()
@@ -5180,54 +5813,72 @@ function RepositionButtonsFromOffset()
 
     local pcp = GetPCPFrame()
     if not pcp then return end
+
     local pcpPhysX = pcp:GetLeft() * pcp:GetEffectiveScale()
     local pcpPhysY = pcp:GetTop()  * pcp:GetEffectiveScale()
 
-    -- Placering beroende p堭ode
+    local handled = false
+
     if FillRaidBotsSavedSettings.moveButtonsRelative then
-        -- Relative mode: exakt offset fr宠PCP
+        -- Relative mode
         if not savedPosition or not savedPosition.offsetX then return end
+
         openFillRaidButton:ClearAllPoints()
         openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT",
             (pcpPhysX + savedPosition.offsetX) / uiScale,
             (pcpPhysY + savedPosition.offsetY) / uiScale)
+
     elseif FillRaidBotsSavedSettings.moveButtonsEnabled then
-        -- Free mode: exakt abs position
+        -- Free mode
         if not savedPosition or not savedPosition.absX then return end
+
         openFillRaidButton:ClearAllPoints()
         openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT",
-            savedPosition.absX / uiScale, savedPosition.absY / uiScale)
+            savedPosition.absX / uiScale,
+            savedPosition.absY / uiScale)
+
     else
-        -- Fixed mode: knappen 䲠barn till PCP, h䲠kan horisontell layout centreras
+-- pumpan: RepositionButtonsFromOffset(): (20260317) changed the fixed horizontal layout to anchor buttons from the right,
+-- added a handled flag to prevent the old positioning code from overwriting it, 
+-- which stabilizes their placement when button sizes change.
         if layout == "horizontal" then
-            local w1, w2, w3 = openFillRaidButton:GetWidth(), kickAllButton:GetWidth(), reFillButton:GetWidth()
-            local totalWidth = w1 + w2 + w3 + (spacing * 2)
-            --local extraOffset = 30
-            openFillRaidButton:ClearAllPoints()
-            openFillRaidButton:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT",
-                (pcpPhysX - totalWidth) / uiScale,
+            -- RIGHT anchor (works better)
+            reFillButton:ClearAllPoints()
+            reFillButton:SetPoint("TOPRIGHT", UIParent, "BOTTOMLEFT",
+                pcpPhysX / uiScale,
                 pcpPhysY / uiScale)
-        else
+
+            kickAllButton:ClearAllPoints()
+            kickAllButton:SetPoint("RIGHT", reFillButton, "LEFT", -spacing, 0)
+
             openFillRaidButton:ClearAllPoints()
-            openFillRaidButton:SetPoint("TOPLEFT", pcp, "TOPLEFT", 0, 0)
+            openFillRaidButton:SetPoint("RIGHT", kickAllButton, "LEFT", -spacing, 0)
+
+            handled = true
         end
     end
+	-- pumpan:(20260319) commented out openFillRaidButton:ClearAllPoints() in RepositionButtonsFromOffset()
+	--
+	-- pumpan:(20260318) Clear all button anchors before rebuilding non-horizontal layout.
+	-- Fixes anchor loop when switching from horizontal back to vertical, where
+	-- openFillRaidButton could still be anchored to kickAllButton from the old chain.
+	if not handled then
+		--openFillRaidButton:ClearAllPoints() --pumpan:(20260319) commented out
+		kickAllButton:ClearAllPoints()
+		reFillButton:ClearAllPoints()
 
-    -- Placera kickAllButton och reFillButton
-    kickAllButton:ClearAllPoints()
-    reFillButton:ClearAllPoints()
-
-    if layout == "horizontal" then
-        kickAllButton:SetPoint("LEFT", openFillRaidButton, "RIGHT", spacing, 0)
-        reFillButton:SetPoint("LEFT", kickAllButton, "RIGHT", spacing, 0)
-    else
-        kickAllButton:SetPoint("TOP", openFillRaidButton, "BOTTOM", 0, -spacing)
-        reFillButton:SetPoint("TOP", kickAllButton, "BOTTOM", 0, -spacing)
-		InitializeButtonPosition()
-    end
+		if layout == "horizontal" then
+			kickAllButton:SetPoint("LEFT", openFillRaidButton, "RIGHT", spacing, 0)
+			reFillButton:SetPoint("LEFT", kickAllButton, "RIGHT", spacing, 0)
+		else
+			InitializeButtonPosition()
+			kickAllButton:SetPoint("TOP", openFillRaidButton, "BOTTOM", 0, -spacing)
+			reFillButton:SetPoint("TOP", kickAllButton, "BOTTOM", 0, -spacing)
+		end
+	end
 end
 
---Nymz MoveButtons: Track PCP position to detect movement.
+--Nymz: MoveButtons Track PCP position to detect movement.
 local lastPcpPhysX, lastPcpPhysY
 
 local visibilityFrame = CreateFrame("Frame")
@@ -5237,7 +5888,7 @@ visibilityFrame:SetScript("OnUpdate", function(self, elapsed)
 
 	if PCPVersionCheck and PCPVersionCheck:IsVisible() then
 
-		--Nymz MoveButtons: Show buttons, positioning them right before showing so they land correctly.
+		--Nymz: MoveButtons Show buttons, positioning them right before showing so they land correctly.
 		if not fillRaidFrameManualClose and not openFillRaidButton:IsShown() then
 			openFillRaidButton:Show()
 		end
@@ -5252,7 +5903,7 @@ visibilityFrame:SetScript("OnUpdate", function(self, elapsed)
 		-- Pumpan: Always ensure correct layout
 		RepositionButtonsFromOffset()
 
-		--Nymz MoveButtons: Detect PCP movement and reposition buttons immediately when it moves.
+		--Nymz: MoveButtons Detect PCP movement and reposition buttons immediately when it moves.
 		-- No debounce - fires only on frames where PCP actually changed position.
 		if not openFillRaidButton.isMoving then
 			local pcpPhysX = PCPVersionCheck:GetLeft() * PCPVersionCheck:GetEffectiveScale()
@@ -5280,15 +5931,43 @@ CreateFillRaidUI()
 InitializeSettings()
 InitializeButtonPosition() -- restore saved position after UI and PCP are created
 
---Nymz MoveButtons: Delay full reposition until PLAYER_LOGIN so PCP has restored its saved position.
+--Nymz: MoveButtons Delay full rebuild until PLAYER_LOGIN so PCP has restored its saved position.
 local fillRaidInitFrame = CreateFrame("Frame")
 fillRaidInitFrame:RegisterEvent("PLAYER_LOGIN")
 fillRaidInitFrame:SetScript("OnEvent", function(self)
     self:UnregisterEvent("PLAYER_LOGIN")
-    InitializeButtonPosition()
-    RepositionButtonsFromOffset()
-end)
 
+    -- Pumpan:(20260320) fillRaidInitFrame:SetScript("OnEvent", function(self): 
+	-- Match reset path: normalize all button parents before style/size is applied
+    -- so SetWidth/SetHeight happens in the same effective scale space. (same as Nymz: ButtonSize (20260316) fix)
+    if FRB_openFillRaidButton then FRB_openFillRaidButton:SetParent(UIParent) end
+    if FRB_kickAllButton      then FRB_kickAllButton:SetParent(UIParent) end
+    if FRB_reFillButton       then FRB_reFillButton:SetParent(UIParent) end
+
+    -- Pumpan:(20260320) Same rebuild order as FillRaidBots_ResetButtonPositions()
+    InitializeButtonPosition()
+    ApplyButtonStyle(FillRaidBotsSavedSettings.selectedButtonTheme)
+    UpdateButtonSizes() -- Nymz: MoveButtons (20260317) apply saved ButtonSize on load so size persists after /rl.
+    RepositionButtonsFromOffset()
+
+    -- Nymz: Re-run ToggleButtonMovement now that SavedVariables are fully loaded,
+    -- so Free/Relative drag scripts are attached with the correct saved mode.
+    -- The lock guard inside ToggleButtonMovement will strip drag scripts if buttonMoveLocked=true.
+    -- Then restore the lock icon visibility.
+    ToggleButtonMovement()
+
+    local isFree = FillRaidBotsSavedSettings.moveButtonsEnabled
+    if isFree then
+        -- Show the lock icon with the correct saved colour (red=locked, green=unlocked).
+        -- FRB_ShowLockButton just shows+refreshes; it no longer resets buttonMoveLocked.
+        local lockBtn = getglobal("FRB_FreeModeLocBtn")
+        if lockBtn then lockBtn:Show() end
+        if FRB_FreeModeLocBtn_Refresh then FRB_FreeModeLocBtn_Refresh() end
+    else
+        local lockBtn = getglobal("FRB_FreeModeLocBtn")
+        if lockBtn then lockBtn:Hide() end
+    end
+end)
 
 
 local messageCooldowns = {}
@@ -5364,9 +6043,7 @@ end
 
 function UninviteAllRaidMembers()
 	local myName = UnitName("player")
-	initialBotRemoved = false
-	firstBotName = nil
-	botCount = 0
+	ResetStarterSequenceState()
 
 	local function isBotName(name)
 		return name and string.find(name, "%*") ~= nil
@@ -5431,7 +6108,7 @@ function GetThemeDefaultSize()
     return 40
 end
 
---Nymz MoveButtons: Global reset function - resets mode to Fixed and clears all saved positions.
+--Nymz: MoveButtons Global reset function - resets mode to Fixed and clears all saved positions.
 -- Called by the /frb resetbuttons slash command and the Reset Buttons UI button.
 
 
@@ -5447,17 +6124,18 @@ function FillRaidBots_ResetButtonPositions()
     FillRaidBotsSavedSettings.buttonPosition = nil
     FillRaidBotsSavedSettings.buttonPositionRelative = nil
 
-    -- reset size to theme original
-    FillRaidBotsSavedSettings.ButtonSize = GetThemeDefaultSize()
+    -- reset size to 100% (theme default)
+    -- Nymz: (20260318) MoveButtons ButtonSize now stored as % so 100 = theme default.
+    FillRaidBotsSavedSettings.ButtonSize = 100
 
     -- reset spacing to slider default
     FillRaidBotsSavedSettings.ButtonSpacing = 4
     FillRaidBotsSavedSettings.ButtonLayout = "vertical"
 
-    --Nymz MoveButtons: Reparent all three buttons to UIParent before resizing.
+    -- Nymz: ButtonSize (20260316) Reparent all three buttons to UIParent before resizing.
     -- They may be on different parent frames (PCPFrame vs PCPFrameRemake) with different
     -- effective scales, causing SetWidth/SetHeight to produce visually different sizes.
-    -- UIParent is always scale 1.0 and the same for all three  sizing them there
+    -- UIParent is always scale 1.0 and the same for all three ? sizing them there
     -- guarantees consistent visual output. They are reparented back afterwards via
     -- InitializeButtonPosition and ToggleButtonMovement.
     if FRB_openFillRaidButton then FRB_openFillRaidButton:SetParent(UIParent) end
@@ -5468,7 +6146,15 @@ function FillRaidBots_ResetButtonPositions()
         ApplySavedSettings()
     end
 
-    --Nymz MoveButtons: Apply style and sizes AFTER reparenting so all three buttons
+    -- Nymz: ButtonReset (20260317) ApplySavedSettings sets ButtonLayout checkbox using
+    -- FillRaidBotsSavedSettings["ButtonLayout"] = "vertical" which is truthy, checking it.
+    -- Fix: explicitly set the checkbox to the correct state after ApplySavedSettings runs.
+    local layoutCb = GetSettingsCheckbox("ButtonLayout")
+    if layoutCb then
+        layoutCb:SetChecked(FillRaidBotsSavedSettings.ButtonLayout == "horizontal")
+    end
+
+    -- Nymz: ButtonSize (20260316) Apply style and sizes AFTER reparenting so all three buttons
     -- are in the same scale space before SetWidth/SetHeight run.
     InitializeButtonPosition()
     ApplyButtonStyle(FillRaidBotsSavedSettings.selectedButtonTheme)
@@ -5477,6 +6163,10 @@ function FillRaidBots_ResetButtonPositions()
 
     DEFAULT_CHAT_FRAME:AddMessage("FillRaidBots: Buttons reset to theme default.", 0.0, 1.0, 0.0)
 
+    -- Nymz: reset the Free-mode lock to unlocked and hide it (we just reset to Fixed)
+    FillRaidBotsSavedSettings.buttonMoveLocked = false
+    if FRB_ResetLockButton then FRB_ResetLockButton() end
+    if ToggleButtonMoveLock then ToggleButtonMoveLock(false) end
 
 end
 
@@ -5498,7 +6188,7 @@ SlashCmdList["FRB"] = function(cmd)
         FixGroups()
 	elseif cmd == "list" then
         SlashCmdList["FILLRAID"]("")
-    --Nymz MoveButtons: resetbuttons slash command delegates to FillRaidBots_ResetButtonPositions.
+    --Nymz: MoveButtons resetbuttons slash command delegates to FillRaidBots_ResetButtonPositions.
     elseif cmd == "resetbuttons" then
         FillRaidBots_ResetButtonPositions()
     else
@@ -5903,5 +6593,163 @@ SlashCmdList["RL"] = function()
     ReloadUI()
 end
 
+
+----------------------------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------------------------
+-- CHANGELOG
+----------------------------------------------------------------------------------------------------------------------
+-- Pumpan:(20260321)
+-- Added starter sequence state flags: starterSequenceRunning, continueFillAfterStarter, starterSwapDone.
+-- Added ResetStarterSequenceState() to fully clear starter/fill state when the group is emptied.
+-- Added StartStarterBotSequence() to support solo, party, and raid starts for >5 bot fills.
+-- Guarded firstBotRemovalFrame so normal first-bot removal does not fire during starter swap.
+-- Updated FillRaid() to use the staged starter swap before continuing normal fill.
+-- Kept raid completion check aligned with the new flow so totals are counted correctly.
+-- Fixed total bot counter refresh while editing class input boxes.
+--
+--
+-- Pumpan:(20260321)
+-- Fixed total bot counter not updating when editing class input boxes.
+-- totalBots was recalculated in OnTextChanged, but UpdateSpotsLeft() was never called,
+--
+-- Nymz:(20260321) PlaySound classic fix
+--   - helpBtn OnClick PlaySound now checks tocVersion.
+--   - 11402 (Classic 1.14.2) uses numeric ID 856 instead of string "igMainMenuOptionCheckBoxOn".
+--
+-- Nymz:(20260321) LockButton
+--   - Added ToggleButtonMoveLock() - controls drag scripts on openFillRaidButton in Free mode.
+--   - Lock only applies in Free mode; Fixed and Relative are never affected.
+--   - Lock state (buttonMoveLocked) saved in FillRaidBotsSavedSettings and survives /rl.
+--   - PLAYER_LOGIN handler restores lock icon visibility and drag state after rebuild.
+--   - buttonMoveLocked cleared in onApply when switching away from Free mode.
+--   - Lock guard in ToggleButtonMovement checks isFree AND buttonMoveLocked so Relative
+--     mode drag scripts are never stripped.
+--
+-- Pumpan:(20260321) Fix Free mode init.
+-- Free mode had no absX/absY until first drag, causing spacing to fail
+-- and /reload to reset to default. Saving position on enable fixes this.
+--
+-- Pumpan:(20260321) Added zone-based max bot limits. to the dynamic raid size based on current zone i made (20260319)
+-- Dungeons 9 bots, LBRS/UBRS (15-man) 14 bots
+--
+-- Pumpan: (20260321) Added Zone button to preset popup (adds current zone to boss list).
+--
+-- Pumpan:(20260320) InitializeButtonPosition() commented this out again (should not be needed any more)
+--
+-- Pumpan:(20260320) fillRaidInitFrame:SetScript("OnEvent", function(self): 
+-- Fix /reload mismatch by rebuilding buttons same as Reset.
+-- Normalize to UIParent before styling/sizing to avoid scale issues (PCP vs UIParent),
+-- then run full pipeline: Initialize ? Style ? Size ? Reposition.
+-- EVERYTHING SHOULD WORK NOW!?
+--
+-- pumpan:(20260319) backtracked the rewoked code and found that ClearAllPoints part destroyed everything
+-- pumpan:(20260319) commented out openFillRaidButton:ClearAllPoints() in RepositionButtonsFromOffset()
+--
+-- Pumpan: (20260319) Implemented dynamic raid size based on current zone.
+-- Replaced hardcoded 39 with GetMaxBotsForCurrentZone() (ZG/AQ20 = 19).
+-- Added UpdateSpotsLeft() helper and hooked ZONE_CHANGED events to auto-update UI without reload.
+--
+--REWOKED Pumpan: (20260318) InitializeButtonPosition() - commented out "Nymz: (20260318) ButtonHorizontal" fix because I think
+--REWOKED my fix in ToggleButtonMovement() makes this redundant. Sorry Nymz! <8
+--
+--REWOKED Pumpan: Fix (20260318) function ApplyButtonLayout(layout)
+--REWOKED Problem: Switching to horizontal layout at runtime (after login) caused wrong button positions,
+--REWOKED same issue as the reload issue.
+
+--REWOKED Fix: Call ToggleButtonMovement() when layout changes so parent + style + scale are reapplied
+--REWOKED before repositioning.
+--
+--
+--REWOKED pumpan: (20260318) RepositionButtonsFromOffset() Clear all button anchors before rebuilding non-horizontal layout.
+--REWOKED Fixes anchor loop when switching from horizontal back to vertical, where
+--REWOKED openFillRaidButton could still be anchored to kickAllButton from the old chain.
+--
+--REWOKED Pumpan(20260318):
+--REWOKED Fixed issue where horizontal button layout was incorrectly following PCPFrame (especially with ElvUI).
+--REWOKED Previously, all buttons were parented to PCPFrame in fixed mode, which caused:
+--REWOKED - Buttons to move automatically when PCPFrame moved
+--REWOKED - Conflicts with manual positioning (offset-based) in horizontal layout
+--REWOKED - Incorrect positions after reload UI (mainly with ElvUI)
+--REWOKED
+--REWOKED Fix:
+--REWOKED - In horizontal layout, all buttons are now parented to UIParent instead of PCPFrame
+--REWOKED - This makes positioning fully controlled by our own offset logic (GetLeft/GetTop)
+--REWOKED - After changing parent, we reapply:
+--REWOKED      ApplyButtonStyle() and UpdateButtonSizes()
+--REWOKED   to ensure consistent button sizes (prevents scale mismatch issues)
+--REWOKED
+--REWOKED Result:
+--REWOKED - Buttons no longer shift when PCPFrame moves
+--REWOKED - Consistent positioning after reload
+--REWOKED - No size differences between buttons
+--
+-- Pumpan (20260318) ApplySavedLootMethod()
+-- Fixes:
+--   - Loot type no longer resets immediately if changed manually.
+--   - Prevents spam in battlegrounds or other temporary groups.
+--   - Detects when the player becomes group/raid leader and applies the saved loot method.
+--   - Only triggers on a leader state change and skips if the loot method is already correct.
+--   - More efficient and maintainable than the original approach, which ran on every roster update.
+--
+-- Pumpan:(20260318) in function fillraid()
+--  --Removed waitForPartyFrame this is now redundant thanks to ApplySavedLootMethod()
+--
+-- Nymz: (20260318) ButtonPct
+--   - ButtonSize now stored as % instead of pixels (100% = theme default size).
+--   - UpdateButtonSizes converts % to pixels using GetThemeDefaultSize.
+--   - Reset function sets ButtonSize to 100 (100%) instead of raw pixel value.
+--   - UpdateButtonSizes called on PLAYER_LOGIN so size persists after /rl.
+--   - GetButtonLayout and GetButtonSpacing made global.
+--
+-- Nymz: (20260318) ButtonLayout
+--   - Fixed ButtonLayout checkbox showing as checked on load and after /rl.
+--     Checkbox renderer now uses get/set functions when defined, preventing
+--     truthy string "vertical" from incorrectly checking the box.
+--   - Same fix applied in FillRaidBots_LoadSettings after ApplySavedSettings.
+--
+-- Nymz: (20260318) ButtonHorizontal
+--   - Applied Pumpan's right-anchor horizontal Fixed mode logic to InitializeButtonPosition
+--     so buttons are correctly positioned on load, not just after PCP moves.
+--
+-- pumpan: RepositionButtonsFromOffset(): (20260317) changed the fixed horizontal layout to anchor buttons from the right,
+-- added a handled flag to prevent the old positioning code from overwriting it, 
+-- which stabilizes their placement when button sizes change.
+--
+
+-- Nymz: ButtonReset (20260317)
+--   - FillRaidBots_ResetButtonPositions: fixed ButtonLayout checkbox being incorrectly
+--     checked after reset because ApplySavedSettings reads ButtonLayout as a truthy string.
+--
+-- Nymz: ButtonSize (20260316)
+--   - FRB_openFillRaidButton, FRB_kickAllButton, FRB_reFillButton: global aliases for locals inside
+--     CreateFillRaidUI so the reset function can access them from outside that scope.
+--   - FillRaidBots_ResetButtonPositions: reparent all three buttons to UIParent before ApplySavedSettings
+--     runs, ensuring they share the same effective scale when SetWidth/SetHeight are called.
+--     Without this, buttons on different parent frames (PCPFrame vs PCPFrameRemake) get sized in
+--     different coordinate spaces and appear visually inconsistent after reset.
+--   - FillRaidBots_ResetButtonPositions: reordered call sequence to InitializeButtonPosition ->
+--     ApplyButtonStyle -> UpdateButtonSizes -> RepositionButtonsFromOffset after reparenting.
+--
+-- Nymz: MoveButtons
+--   - Moved savedPositions to file scope for slash command access.
+--   - Replaced single checkbox with Fixed/Free/Relative radio group.
+--   - All positions stored in physical pixels (GetLeft() * GetEffectiveScale()) for scale independence.
+--   - OnDragStop: captures physical position before StopMovingOrSizing, reparents to UIParent.
+--   - InitializeButtonPosition: restores from physical offset (Relative) or absolute position (Free).
+--   - ToggleButtonMovement: handles SetParent and drag scripts per mode.
+--   - RepositionButtonsFromOffset: replaces per-frame UpdateButtonPosition, fires only when PCP moves.
+--   - PLAYER_LOGIN delayed init so PCP has restored its saved position before buttons are placed.
+--   - FillRaidBots_ResetButtonPositions: resets mode to Fixed, clears saved positions, updates UI.
+--   - /frb resetbuttons slash command delegates to FillRaidBots_ResetButtonPositions.
+--
+-- Nymz: OthersButton
+--   - Always reserve a slot for the Others button so frames are sized correctly.
+--   - Always create the Others button on every instance frame except PresetDungeounOther.
+--   - Store reference on frame so ToggleOthersButton can show/hide it live without /rl.
+--
+-- Nymz: RoleDetection
+--   - Removed UNIT_AURA event, replaced with GROUP_ROSTER_UPDATE + debounce.
+--
 
 ----------------------------------------------------------------------------------------------------------------------
